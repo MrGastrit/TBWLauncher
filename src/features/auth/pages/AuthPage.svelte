@@ -1,11 +1,23 @@
 ﻿<script lang="ts">
   import AuthForm from '../components/AuthForm.svelte'
+  import { createEventDispatcher } from 'svelte'
+
+  type AuthSuccessPayload = {
+    nickname: string
+    emailOrLogin: string
+  }
+
+  const dispatch = createEventDispatcher<{ authSuccess: AuthSuccessPayload }>()
+
+  function relayAuthSuccess(event: CustomEvent<AuthSuccessPayload>): void {
+    dispatch('authSuccess', event.detail)
+  }
 </script>
 
 <main class="auth-page">
   <div class="orb orb-left" aria-hidden="true"></div>
   <div class="orb orb-right" aria-hidden="true"></div>
-  <AuthForm />
+  <AuthForm on:authSuccess={relayAuthSuccess} />
 </main>
 
 <style>

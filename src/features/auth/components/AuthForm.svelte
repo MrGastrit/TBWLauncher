@@ -1,79 +1,143 @@
 ﻿<script lang="ts">
-  import { onMount } from "svelte";
-  import { fade } from "svelte/transition";
-  import PasswordField from "./PasswordField.svelte";
+  import { createEventDispatcher, onMount } from 'svelte'
+  import { fade } from 'svelte/transition'
+  import PasswordField from './PasswordField.svelte'
+  import { login, register } from '../services/auth-service'
+  import { validateLoginForm, validateRegisterForm } from '../validation/auth-validation'
 
-  type AuthMode = "register" | "login";
+  type AuthMode = 'register' | 'login'
 
-  const onboardingKey = "tbwlauncher-auth-onboarded";
+  type AuthSuccessPayload = {
+    nickname: string
+    emailOrLogin: string
+  }
 
-  let mode: AuthMode = "register";
+  const dispatch = createEventDispatcher<{ authSuccess: AuthSuccessPayload }>()
 
-  let registerEmail = "";
-  let registerNickname = "";
-  let registerPassword = "";
-  let registerPasswordRepeat = "";
+  const onboardingKey = 'tbwlauncher-auth-onboarded'
 
-  let loginIdentity = "";
-  let loginPassword = "";
+  let mode: AuthMode = 'register'
 
-  let statusMessage = "";
-  let statusType: "error" | "success" | "" = "";
+  let registerEmail = ''
+  let registerNickname = ''
+  let registerPassword = ''
+  let registerPasswordRepeat = ''
+
+  let loginIdentity = ''
+  let loginPassword = ''
+
+  let statusMessage = ''
+  let statusType: 'error' | 'success' | '' = ''
+  let isSubmitting = false
 
   onMount(() => {
-    const hasOnboarding = localStorage.getItem(onboardingKey) === "true";
-    mode = hasOnboarding ? "login" : "register";
-  });
+    const hasOnboarding = localStorage.getItem(onboardingKey) === 'true'
+    mode = hasOnboarding ? 'login' : 'register'
+  })
 
   function switchMode(nextMode: AuthMode): void {
-    mode = nextMode;
-    statusMessage = "";
-    statusType = "";
+    mode = nextMode
+    statusMessage = ''
+    statusType = ''
   }
 
   function setError(message: string): void {
-    statusMessage = message;
-    statusType = "error";
+    statusMessage = message
+    statusType = 'error'
   }
 
   function setSuccess(message: string): void {
-    statusMessage = message;
-    statusType = "success";
+    statusMessage = message
+    statusType = 'success'
   }
 
-  function handleSubmit(event: SubmitEvent): void {
-    event.preventDefault();
+  function emitAuthSuccess(nickname: string, emailOrLogin: string): void {
+    dispatch('authSuccess', {
+      nickname,
+      emailOrLogin
+    })
+  }
 
-    if (mode === "register") {
-      if (
-        !registerEmail ||
-        !registerNickname ||
-        !registerPassword ||
-        !registerPasswordRepeat
-      ) {
-        setError("Заполните все поля регистрации.");
-        return;
-      }
-
-      if (registerPassword !== registerPasswordRepeat) {
-        setError("Пароли не совпадают.");
-        return;
-      }
-
-      localStorage.setItem(onboardingKey, "true");
-      setSuccess("Аккаунт зарегистрирован!");
-      switchMode("login");
-      loginIdentity = registerEmail;
-      loginPassword = "";
-      return;
+  function extractErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message) {
+      return error.message
     }
 
-    if (!loginIdentity || !loginPassword) {
-      setError("Заполните логин и пароль.");
-      return;
+    if (typeof error === 'string' && error.trim()) {
+      return error
     }
 
-    setSuccess("Форма входа готова. Остается подключить backend API.");
+    if (typeof error === 'object' && error !== null) {
+      const maybeMessage = (error as { message?: unknown }).message
+      if (typeof maybeMessage === 'string' && maybeMessage.trim()) {
+        return maybeMessage
+      }
+    }
+
+    return 'Не удалось выполнить запрос к серверу.'
+  }
+
+  async function handleSubmit(event: SubmitEvent): Promise<void> {
+    event.preventDefault()
+
+    if (isSubmitting) {
+      return
+    }
+
+    statusMessage = ''
+    statusType = ''
+    isSubmitting = true
+
+    try {
+      if (mode === 'register') {
+        const validationError = validateRegisterForm({
+          email: registerEmail,
+          nickname: registerNickname,
+          password: registerPassword,
+          repeatPassword: registerPasswordRepeat
+        })
+
+        if (validationError) {
+          setError(validationError)
+          return
+        }
+
+        const result = await register({
+          email: registerEmail,
+          nickname: registerNickname,
+          password: registerPassword,
+          repeatPassword: registerPasswordRepeat
+        })
+
+        localStorage.setItem(onboardingKey, 'true')
+        setSuccess('Аккаунт зарегистрирован!')
+        emitAuthSuccess(result.user.nickname, result.user.email)
+        return
+      }
+
+      const validationError = validateLoginForm({
+        identity: loginIdentity,
+        password: loginPassword
+      })
+
+      if (validationError) {
+        setError(validationError)
+        return
+      }
+
+      const result = await login({
+        identity: loginIdentity,
+        password: loginPassword
+      })
+
+      emitAuthSuccess(result.user.nickname, result.user.email)
+    } catch (error) {
+      console.error('Auth request failed:', error)
+      const message = extractErrorMessage(error)
+      setError(message)
+    } finally {
+      isSubmitting = false
+    }
   }
 </script>
 
@@ -81,11 +145,11 @@
   <div class="auth-card">
     <header class="auth-header">
       <p class="auth-subtitle">TBW Launcher</p>
-      <h1>{mode === "register" ? "Создание аккаунта" : "Вход в аккаунт"}</h1>
+      <h1>{mode === 'register' ? 'Создание аккаунта' : 'Вход в аккаунт'}</h1>
       <p class="auth-text">
-        {mode === "register"
-          ? "Первый запуск: зарегистрируйся, чтобы продолжить."
-          : "Введите данные от аккаунта, чтобы начать жоскую игру."}
+        {mode === 'register'
+          ? 'Первый запуск: зарегистрируйся, чтобы продолжить.'
+          : 'Введите данные от аккаунта, чтобы начать жоскую игру.'}
       </p>
     </header>
 
@@ -93,18 +157,18 @@
       <button
         type="button"
         role="tab"
-        class:active={mode === "register"}
-        aria-selected={mode === "register"}
-        on:click={() => switchMode("register")}
+        class:active={mode === 'register'}
+        aria-selected={mode === 'register'}
+        on:click={() => switchMode('register')}
       >
         Регистрация
       </button>
       <button
         type="button"
         role="tab"
-        class:active={mode === "login"}
-        aria-selected={mode === "login"}
-        on:click={() => switchMode("login")}
+        class:active={mode === 'login'}
+        aria-selected={mode === 'login'}
+        on:click={() => switchMode('login')}
       >
         Вход
       </button>
@@ -113,7 +177,7 @@
     <form class="auth-form" on:submit={handleSubmit} novalidate>
       {#key mode}
         <div class="mode-panel">
-          {#if mode === "register"}
+          {#if mode === 'register'}
             <label for="reg-email">Почта</label>
             <input
               class="auth-input"
@@ -181,8 +245,12 @@
         </p>
       {/if}
 
-      <button class="submit" type="submit">
-        {mode === "register" ? "Зарегистрироваться" : "Войти"}
+      <button class="submit" type="submit" disabled={isSubmitting}>
+        {#if isSubmitting}
+          Обработка...
+        {:else}
+          {mode === 'register' ? 'Зарегистрироваться' : 'Войти'}
+        {/if}
       </button>
     </form>
   </div>
@@ -315,7 +383,8 @@
     cursor: pointer;
     transition:
       transform 0.18s,
-      filter 0.18s;
+      filter 0.18s,
+      opacity 0.18s;
   }
 
   .submit:hover {
@@ -325,5 +394,10 @@
 
   .submit:active {
     transform: translateY(0);
+  }
+
+  .submit:disabled {
+    cursor: not-allowed;
+    opacity: 0.75;
   }
 </style>

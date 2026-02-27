@@ -1,13 +1,49 @@
 ﻿:root {
+  --text-main: #e9f0ff;
+  --text-soft: #bfd0ef;
+  --text-muted: #9eabc4;
+  --accent: #82d6b3;
+  --accent-soft: #82d6b3;
+
+  --line: rgba(111, 130, 162, 0.34);
+  --line-strong: rgba(143, 173, 219, 0.55);
+
+  --background-main: #090d14;
+  --surface-main: #121826;
+  --surface-alt: #171f2f;
+  --surface-elevated: #202b40;
+
+  --shadow-main: 0 24px 90px rgba(2, 4, 10, 0.65);
+
   font-family: "Bahnschrift", "Segoe UI", sans-serif;
   line-height: 1.45;
   font-weight: 400;
-  color: #e9f0ff;
-  background: radial-gradient(circle at 20% 10%, #1b2334 0%, #0c111b 45%, #070a11 100%);
+  color: var(--text-main);
+  background: var(--background-main);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-theme='light'] {
+  --text-main: #132133;
+  --text-soft: #2a4266;
+  --text-muted: #4c6485;
+  --accent: #1f9f88;
+  --accent-soft: #2f967e;
+
+  --line: rgba(124, 151, 188, 0.5);
+  --line-strong: rgba(83, 132, 201, 0.7);
+
+  --background-main: #e6eef8;
+  --surface-main: #edf3fb;
+  --surface-alt: #f7fbff;
+  --surface-elevated: #e8f0fa;
+
+  --shadow-main: 0 16px 48px rgba(25, 43, 74, 0.24);
+
+  background: var(--background-main);
 }
 
 * {
