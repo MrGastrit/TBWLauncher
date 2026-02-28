@@ -5,6 +5,22 @@
   import BuildShowcase from "../components/BuildShowcase.svelte";
   import AccountSettingsPanel from "../components/AccountSettingsPanel.svelte";
   import LauncherSettingsPanel from "../components/LauncherSettingsPanel.svelte";
+  import {
+    type BuildInstallProgressState,
+    type BuildInstallationState,
+    getBuildInstallationStates as getBuildInstallationStatesCommand,
+    getGameRuntimeState as getGameRuntimeStateCommand,
+    getInstallProgressState as getInstallProgressStateCommand,
+    installBuild as installBuildCommand,
+    toggleGameRuntime as toggleGameRuntimeCommand,
+  } from "../services/game-runtime-service";
+  import {
+    attachHoverSounds,
+    playLaunchSound,
+    playPanelCloseSound,
+    playPanelOpenSound,
+    playSwitchSound,
+  } from "../services/ui-sound";
 
   type SessionUser = {
     nickname: string;
@@ -20,6 +36,7 @@
     description: string;
     imageFile: string;
     installed?: boolean;
+    updateAvailable?: boolean;
     filters?: string[];
     loader?: string;
     gameVersion?: string;
@@ -49,6 +66,18 @@
   let runningModeName: string | null = null;
   let openModeRequest: OpenModeRequest | null = null;
   let openModeRequestIdCounter = 0;
+  let launcherRootElement: HTMLElement;
+  let launchInFlight = false;
+  let launchPendingModeName: string | null = null;
+  let showLaunchProgress = false;
+  let launchProgress = 0;
+  let launchStatusText = "";
+  let launchProgressTimer: ReturnType<typeof setInterval> | null = null;
+  let installProgressPollTimer: ReturnType<typeof setInterval> | null = null;
+  let launchProgressHideTimer: ReturnType<typeof setTimeout> | null = null;
+  let usingRealLaunchProgress = false;
+  let runtimeStatePollTimer: ReturnType<typeof setInterval> | null = null;
+  let installedBuildStateByName: Record<string, BuildInstallationState> = {};
 
   let recentModes: string[] = [];
 
@@ -78,6 +107,24 @@
       "▪︎ Шутер подставляющий собой сборник карт и поджанров таких как DeathMatch и т. д. \n▪︎ Игроки появляются на карте с случайным оружием в руках. \n▪︎ Цель команд убить как можно больше других игроков, при достижении нужного количества убийств, команда побеждает.",
     Laboratory:
       '▪︎ В комплексе "D7" секретной организации "Netherhill" произошло нарушение условий содержания. \n▪︎ Ваша задача взять на себя роль "Специалиста" и сбежать из комплекса.\n▪︎ Либо вооружившись винтовкой и бронёй "CSG" пополнить ряды Оперативников, дабы выполнить свою миссию: "Устранить Специалистов, опасного Монстра и нормализовать работу Реактора".\n▪︎ Также есть возможность стать опасным объектом "NH-67B", который может разорвать всех в клочья',
+    CROSSBATTLES:
+      "▪︎ На карте вам предстоит сражаться с другими командами, покупая оружие на накопанную вaми руду.",
+    INFECTED:
+      "▪ INFECTED - Это психологическая игра, похожая на Мафию (или же Deceit, Among Us).\n▪ Выжившие должны выполнять задания и стараться понять, кто является монстром.\n▪ В тот момент как заражённый должен всячески этому препятствовать.",
+    "MAFIA: Last Visitor":
+      "▪︎ Шторм загнал путников в старый отель. Среди гостей затесалась мафия — но кто он?. \n▪︎ Мирные (жители, доктор, шериф) ищут предателей. \n▪︎ Мафия устраняет всех. Чтобы победить, используй тактики и изучай психологию человека. \n▪︎ Днем — споры и голосования. \n▪︎ Ночью — тайные убийства. Кто выживет?",
+    'Operation "Blizzard"':
+      '▪︎ Есть две команды: "Атака" и "Оборона".\n▪︎ "Атаке" нужно захватить и принести себе на базу секретные документы, спрятанные в горном исследовательском комплексе.\n▪︎ "Обороне" Нужно тщательно этому помешать.',
+    "SLASHER: Redwood":
+      "▪︎ На этой карте вам предстоит взять на себя роль выжившего, либо кровожадного монстра.\n▪︎ Играя за чувырлу - придётся выслеживать и убивать людей, мешая им совершить побег.\n▪︎ Играя за выжившего нужно найти способ побега, выполняя различные задания.",
+    SCAVENGER:
+      "▪︎ На этой карте вам предстоит взять на себя роль выжившего, либо кровожадного монстра.\n▪︎ Играя за монстра - придётся выслеживать и убивать людей, мешая им совершить побег.\n▪︎ Играя за выжившего вам нужно найти все четыре трупа, взять био-материал монстра и разработать сыворотку, с помощью которой вы и убьёте существо.",
+    SHADOWS:
+      '▪ Игровой режим на подобии "Slasher:Redwood" или же "Scavenger".\n▪ Цель егерей сначала сфотографировать монстра, а позже зафиксировать его "активность" с помощью Детектора ЭМП.\n▪ Целью монстра является выживание и убийство всех егерей.',
+    "PHASMOPHOBIA: Halloween":
+      "▪︎ Задача Охотников: понять, к какому типу относится Призрак, после чего найти и принести в фургон Реликвию.\n▪︎ Задача Призрака: Убить всех Охотников и не позволить вынести реликвию из Дома.",
+    RAKE: '▪︎ Вы, исследовательская группа которая приехала в лес, находящийся в аномальном районе, в округе "Redwood", и заметили странную активность в этом лесу.\n▪︎ Возьмите на себя роль храброго охотника, который должен неизвестное существо.\n▪︎ Монстра, который должен сломать два генератора, что бы лишить егерей поставок ресурсов.',
+    "Counter Craft": "▪︎ Counter Strike: Global Offencive в Minecraft.",
   };
 
   let buildImagesByName: Record<string, string> = {
@@ -105,19 +152,19 @@
     }
   > = {
     ARCADE: {
-      installed: true,
+      installed: false,
       filters: ["shooter"],
       loader: "Forge",
       gameVersion: "1.20.1",
     },
     Laboratory: {
-      installed: true,
+      installed: false,
       filters: ["rp"],
       loader: "Forge",
       gameVersion: "1.12.2",
     },
     CROSSBATTLES: {
-      installed: true,
+      installed: false,
       filters: ["shooter"],
       loader: "Forge",
       gameVersion: "1.20.1",
@@ -193,13 +240,15 @@
 
   $: builds = buildNames.map((name) => {
     const meta = buildMetaByName[name] ?? {};
+    const installationState = installedBuildStateByName[name];
 
     return {
       id: makeBuildId(name),
       name,
       description: buildDescriptionsByName[name] ?? "Описание не задано.",
       imageFile: buildImagesByName[name] ?? "",
-      installed: meta.installed ?? false,
+      installed: installationState?.installed ?? false,
+      updateAvailable: installationState?.updateAvailable ?? false,
       filters: meta.filters ?? [],
       loader: meta.loader ?? "Forge",
       gameVersion: meta.gameVersion ?? "1.20.1",
@@ -230,18 +279,65 @@
     }
 
     applyTheme(theme);
+    void refreshRuntimeState();
+    void refreshBuildInstallationStates();
+
+    const detachHoverSounds = launcherRootElement
+      ? attachHoverSounds(launcherRootElement)
+      : () => {};
+    const handleWindowFocus = () => {
+      void refreshRuntimeState();
+      void refreshBuildInstallationStates();
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("focus", handleWindowFocus);
+    }
+
+    runtimeStatePollTimer = setInterval(() => {
+      void refreshRuntimeState();
+      void refreshBuildInstallationStates();
+    }, 2000);
+
+    return () => {
+      if (runtimeStatePollTimer) {
+        clearInterval(runtimeStatePollTimer);
+        runtimeStatePollTimer = null;
+      }
+
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", handleWindowFocus);
+      }
+
+      detachHoverSounds();
+      clearLaunchProgressTimers();
+    };
   });
 
   function openAccountSettings(): void {
+    void (viewMode === "home" ? playPanelOpenSound() : playSwitchSound());
     viewMode = "account";
   }
 
   function openLauncherSettings(): void {
+    void (viewMode === "home" ? playPanelOpenSound() : playSwitchSound());
     viewMode = "launcher-settings";
   }
 
   function returnHome(): void {
+    void playPanelCloseSound();
     viewMode = "home";
+  }
+
+  function setActiveTab(nextTab: MainTab, withSound = true): void {
+    if (activeTab === nextTab) {
+      return;
+    }
+
+    activeTab = nextTab;
+    if (withSound) {
+      void playSwitchSound();
+    }
   }
 
   function updateTheme(nextTheme: ThemeMode): void {
@@ -265,16 +361,179 @@
     return name.toLowerCase().replace(/[^a-zа-яё0-9]/gi, "-");
   }
 
-  function handleModeLaunch(event: CustomEvent<{ modeName: string }>): void {
-    toggleModeRuntime(event.detail.modeName);
+  function formatLaunchError(error: unknown): string {
+    if (typeof error === "string" && error.trim()) {
+      return error;
+    }
+
+    if (error && typeof error === "object") {
+      if (
+        "message" in error &&
+        typeof (error as { message?: unknown }).message === "string"
+      ) {
+        const message = (error as { message: string }).message.trim();
+        if (message) {
+          return message;
+        }
+      }
+
+      try {
+        const serialized = JSON.stringify(error);
+        if (serialized && serialized !== "{}") {
+          return serialized;
+        }
+      } catch {}
+    }
+
+    return "Не удалось запустить игру.";
   }
 
-  function launchRecentMode(modeName: string): void {
-    toggleModeRuntime(modeName);
+  async function refreshRuntimeState(): Promise<void> {
+    if (launchInFlight) {
+      return;
+    }
+
+    try {
+      const runtimeState = await getGameRuntimeStateCommand();
+      runningModeName = runtimeState.activeModeName;
+    } catch (error) {
+      console.error("Failed to sync game runtime state:", error);
+    }
+  }
+
+  async function refreshBuildInstallationStates(): Promise<void> {
+    if (launchInFlight) {
+      return;
+    }
+
+    try {
+      const states = await getBuildInstallationStatesCommand(buildNames);
+      installedBuildStateByName = Object.fromEntries(
+        states.map((state) => [state.modeName, state]),
+      );
+    } catch (error) {
+      console.error("Failed to sync build installation state:", error);
+    }
+  }
+
+  function clearLaunchProgressTimers(): void {
+    if (launchProgressTimer) {
+      clearInterval(launchProgressTimer);
+      launchProgressTimer = null;
+    }
+
+    if (installProgressPollTimer) {
+      clearInterval(installProgressPollTimer);
+      installProgressPollTimer = null;
+    }
+
+    if (launchProgressHideTimer) {
+      clearTimeout(launchProgressHideTimer);
+      launchProgressHideTimer = null;
+    }
+
+    usingRealLaunchProgress = false;
+  }
+
+  function stopLaunchProgress(): void {
+    clearLaunchProgressTimers();
+    showLaunchProgress = false;
+    launchProgress = 0;
+    launchStatusText = "";
+    launchPendingModeName = null;
+  }
+
+  function beginBusyProgress(modeName: string, statusText: string): void {
+    clearLaunchProgressTimers();
+    launchPendingModeName = modeName;
+    showLaunchProgress = true;
+    launchProgress = 8;
+    launchStatusText = statusText;
+
+    launchProgressTimer = setInterval(() => {
+      launchProgress = Math.min(
+        92,
+        launchProgress + Math.max(2, Math.round((100 - launchProgress) / 10)),
+      );
+    }, 180);
+
+    void syncInstallProgress(modeName);
+    installProgressPollTimer = setInterval(() => {
+      void syncInstallProgress(modeName);
+    }, 140);
+  }
+
+  async function syncInstallProgress(modeName: string): Promise<void> {
+    try {
+      const progressState = await getInstallProgressStateCommand();
+      if (!progressState || progressState.modeName !== modeName) {
+        return;
+      }
+
+      applyInstallProgressState(progressState);
+    } catch (error) {
+      console.error("Failed to sync install progress state:", error);
+    }
+  }
+
+  function applyInstallProgressState(
+    progressState: BuildInstallProgressState,
+  ): void {
+    if (!usingRealLaunchProgress) {
+      usingRealLaunchProgress = true;
+      if (launchProgressTimer) {
+        clearInterval(launchProgressTimer);
+        launchProgressTimer = null;
+      }
+    }
+
+    launchProgress = Math.max(0, Math.min(100, progressState.progressPercent));
+    launchStatusText = progressState.stageText || launchStatusText;
+  }
+
+  function completeBusyProgress(finalText: string): void {
+    if (!showLaunchProgress) {
+      launchPendingModeName = null;
+      return;
+    }
+
+    clearLaunchProgressTimers();
+    launchProgress = 100;
+    launchStatusText = finalText;
+    launchProgressHideTimer = setTimeout(() => {
+      stopLaunchProgress();
+    }, 220);
+  }
+
+  async function handleModeLaunch(
+    event: CustomEvent<{ modeName: string }>,
+  ): Promise<void> {
+    await toggleModeRuntime(event.detail.modeName);
+  }
+
+  async function handleModeInstall(
+    event: CustomEvent<{ modeName: string }>,
+  ): Promise<void> {
+    await installMode(event.detail.modeName);
+  }
+
+  async function launchRecentMode(modeName: string): Promise<void> {
+    const build = builds.find((item) => item.name === modeName);
+    if (!build) {
+      return;
+    }
+
+    if (!build.installed || build.updateAvailable) {
+      await installMode(modeName);
+      return;
+    }
+
+    await toggleModeRuntime(modeName);
   }
 
   function openModeFromRecent(modeName: string): void {
-    activeTab = "modes";
+    void playSwitchSound();
+    setActiveTab("modes", false);
     openModeRequestIdCounter += 1;
     openModeRequest = {
       id: openModeRequestIdCounter,
@@ -282,14 +541,88 @@
     };
   }
 
-  function toggleModeRuntime(modeName: string): void {
-    if (runningModeName === modeName) {
-      runningModeName = null;
+  async function toggleModeRuntime(modeName: string): Promise<void> {
+    if (launchInFlight) {
       return;
     }
 
-    runningModeName = modeName;
-    markModeLaunched(modeName);
+    const build = builds.find((item) => item.name === modeName);
+    const isStoppingCurrentMode = runningModeName === modeName;
+    launchInFlight = true;
+
+    if (isStoppingCurrentMode) {
+      launchPendingModeName = modeName;
+      showLaunchProgress = false;
+      launchStatusText = "";
+    } else {
+      beginBusyProgress(modeName, "Проверка файлов, библиотек и ассетов...");
+    }
+
+    try {
+      const runtimeState = await toggleGameRuntimeCommand(
+        modeName,
+        user.nickname,
+        build?.gameVersion,
+      );
+
+      runningModeName = runtimeState.activeModeName;
+      void playLaunchSound(runtimeState.running);
+
+      if (runtimeState.running && runtimeState.activeModeName) {
+        markModeLaunched(runtimeState.activeModeName);
+      }
+
+      if (!isStoppingCurrentMode) {
+        completeBusyProgress("Запуск игры...");
+      } else {
+        launchPendingModeName = null;
+      }
+    } catch (error) {
+      console.error("Game launch failed:", error);
+      stopLaunchProgress();
+      const message = formatLaunchError(error);
+
+      if (typeof window !== "undefined") {
+        window.alert(message);
+      }
+    } finally {
+      launchInFlight = false;
+    }
+  }
+
+  async function installMode(modeName: string): Promise<void> {
+    if (launchInFlight) {
+      return;
+    }
+
+    const build = builds.find((item) => item.name === modeName);
+    launchInFlight = true;
+    beginBusyProgress(
+      modeName,
+      build?.updateAvailable
+        ? "Обновление и распаковка сборки..."
+        : "Загрузка и распаковка сборки...",
+    );
+
+    try {
+      const installationState = await installBuildCommand(modeName);
+      installedBuildStateByName = {
+        ...installedBuildStateByName,
+        [installationState.modeName]: installationState,
+      };
+      completeBusyProgress("Сборка установлена");
+      void refreshBuildInstallationStates();
+    } catch (error) {
+      console.error("Build install failed:", error);
+      stopLaunchProgress();
+      const message = formatLaunchError(error);
+
+      if (typeof window !== "undefined") {
+        window.alert(message);
+      }
+    } finally {
+      launchInFlight = false;
+    }
   }
 
   function markModeLaunched(modeName: string): void {
@@ -310,14 +643,17 @@
   }
 
   function requestSignOut(): void {
+    void playPanelOpenSound();
     showSignOutConfirm = true;
   }
 
   function cancelSignOut(): void {
+    void playPanelCloseSound();
     showSignOutConfirm = false;
   }
 
   function signOut(): void {
+    void playPanelCloseSound();
     showSignOutConfirm = false;
     runningModeName = null;
     openModeRequest = null;
@@ -326,7 +662,7 @@
   }
 </script>
 
-<main class="launcher-root">
+<main class="launcher-root" bind:this={launcherRootElement}>
   <section class="launcher-shell">
     <aside class="left-nav">
       <div class="nav-buttons">
@@ -334,7 +670,7 @@
           type="button"
           class="nav-button"
           class:active={activeTab === "home"}
-          on:click={() => (activeTab = "home")}
+          on:click={() => setActiveTab("home")}
           aria-label="Домашняя страница"
           title="Домашняя страница"
         >
@@ -348,7 +684,7 @@
           type="button"
           class="nav-button"
           class:active={activeTab === "skins"}
-          on:click={() => (activeTab = "skins")}
+          on:click={() => setActiveTab("skins")}
           aria-label="Скины"
           title="Скины"
         >
@@ -363,7 +699,7 @@
           type="button"
           class="nav-button"
           class:active={activeTab === "modes"}
-          on:click={() => (activeTab = "modes")}
+          on:click={() => setActiveTab("modes")}
           aria-label="Режимы"
           title="Режимы"
         >
@@ -417,6 +753,22 @@
         </button>
       </header>
 
+      {#if showLaunchProgress}
+        <div class="launch-progress-overlay" role="status" aria-live="polite">
+          <div class="launch-progress-panel">
+            <div class="launch-progress-title">Подготовка сборки</div>
+            <p>{launchStatusText}</p>
+            <div class="launch-progress-bar" aria-hidden="true">
+              <div
+                class="launch-progress-fill"
+                style={`width: ${launchProgress}%;`}
+              ></div>
+            </div>
+            <div class="launch-progress-percent">{launchProgress}%</div>
+          </div>
+        </div>
+      {/if}
+
       <section class="home-layer" class:blurred={viewMode !== "home"}>
         {#key activeTab}
           <div
@@ -461,10 +813,24 @@
                             type="button"
                             class="recent-launch-btn"
                             class:running={runningModeName === mode.name}
-                            on:click|stopPropagation={() => launchRecentMode(mode.name)}
+                            disabled={launchInFlight}
+                            on:click|stopPropagation={() =>
+                              launchRecentMode(mode.name)}
                           >
-                            {#if runningModeName === mode.name}
+                            {#if showLaunchProgress && launchPendingModeName === mode.name}
+                              {#if mode.updateAvailable}
+                                Обновление...
+                              {:else if mode.installed}
+                                Подготовка...
+                              {:else}
+                                Установка...
+                              {/if}
+                            {:else if runningModeName === mode.name}
                               Закрыть игру
+                            {:else if mode.updateAvailable}
+                              Обновить
+                            {:else if !mode.installed}
+                              Установить
                             {:else}
                               Запустить
                             {/if}
@@ -488,7 +854,12 @@
                 {assetImageNames}
                 {bundledAssetUrlsByName}
                 {runningModeName}
+                {launchInFlight}
+                launchPendingModeName={showLaunchProgress
+                  ? launchPendingModeName
+                  : null}
                 {openModeRequest}
+                on:install={handleModeInstall}
                 on:launch={handleModeLaunch}
               />
             {/if}
@@ -720,6 +1091,7 @@
   }
 
   .launcher-card {
+    position: relative;
     width: 100%;
     height: calc(100vh - 24px);
     min-height: 0;
@@ -733,6 +1105,63 @@
     grid-template-rows: auto 1fr;
     gap: 10px;
     overflow: hidden;
+  }
+
+  .launch-progress-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(8, 14, 22, 0.58);
+    backdrop-filter: blur(6px);
+  }
+
+  .launch-progress-panel {
+    width: min(420px, 100%);
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--surface-main) 92%, #0b1422 8%);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.32);
+    padding: 18px 18px 16px;
+  }
+
+  .launch-progress-title {
+    font-size: 0.98rem;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+  }
+
+  .launch-progress-panel p {
+    margin: 8px 0 14px;
+    font-size: 0.84rem;
+    color: var(--text-muted);
+  }
+
+  .launch-progress-bar {
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .launch-progress-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #69d9b7 0%, #7ad5f4 52%, #a4b8ff 100%);
+    box-shadow: 0 0 18px rgba(122, 213, 244, 0.28);
+    transition: width 0.18s ease;
+  }
+
+  .launch-progress-percent {
+    margin-top: 10px;
+    text-align: right;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-muted);
   }
 
   .launcher-head {
@@ -989,6 +1418,14 @@
 
   .recent-launch-btn.running:hover {
     box-shadow: 0 4px 12px rgba(168, 38, 38, 0.38);
+  }
+
+  .recent-launch-btn:disabled {
+    cursor: wait;
+    transform: none;
+    filter: none;
+    box-shadow: none;
+    opacity: 0.86;
   }
 
   .recent-reserved-space {

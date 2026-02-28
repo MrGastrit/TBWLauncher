@@ -3,6 +3,7 @@
   import { cubicOut } from "svelte/easing";
   import { fade, fly, scale } from "svelte/transition";
   import { createEventDispatcher } from "svelte";
+  import { playClickSound, playSwitchSound } from "../services/ui-sound";
 
   type BuildItem = {
     id: string;
@@ -10,6 +11,7 @@
     description?: string;
     imageFile?: string;
     installed?: boolean;
+    updateAvailable?: boolean;
     filters?: string[];
     loader?: string;
     gameVersion?: string;
@@ -30,37 +32,34 @@
   export let assetImageNames: string[] = [];
   export let bundledAssetUrlsByName: Record<string, string> = {};
   export let runningModeName: string | null = null;
+  export let launchInFlight = false;
+  export let launchPendingModeName: string | null = null;
   export let openModeRequest: OpenModeRequest | null = null;
 
-  const dispatch = createEventDispatcher<{ launch: { modeName: string } }>();
+  const dispatch = createEventDispatcher<{
+    install: { modeName: string };
+    launch: { modeName: string };
+  }>();
 
   let modeScope: "all" | "installed" = "all";
   let searchValue = "";
   let activeFilter = "all";
   let selectedBuildId: string | null = null;
-  let uiRunningModeName: string | null = null;
-  let lastPropRunningModeName: string | null = null;
   let lastOpenModeRequestId = 0;
   let brokenImageByBuildId: Record<string, boolean> = {};
 
-  $: availableFilters = [{ id: "all", label: "Все фильтры" }, ...filterDefinitions];
+  $: availableFilters = [
+    { id: "all", label: "Все фильтры" },
+    ...filterDefinitions,
+  ];
 
   $: if (!availableFilters.some((item) => item.id === activeFilter)) {
     activeFilter = "all";
   }
 
   $: selectedBuild = selectedBuildId
-    ? builds.find((build) => build.id === selectedBuildId) ?? null
+    ? (builds.find((build) => build.id === selectedBuildId) ?? null)
     : null;
-
-  $: selectedBuildIsRunning = Boolean(
-    selectedBuild && uiRunningModeName === selectedBuild.name,
-  );
-
-  $: if (runningModeName !== lastPropRunningModeName) {
-    uiRunningModeName = runningModeName;
-    lastPropRunningModeName = runningModeName;
-  }
 
   $: if (openModeRequest && openModeRequest.id !== lastOpenModeRequestId) {
     selectedBuildId = openModeRequest.buildId;
@@ -80,7 +79,9 @@
         const currentFilters = selectedBuild.filters ?? [];
         const candidateFilters = build.filters ?? [];
 
-        return candidateFilters.some((filter) => currentFilters.includes(filter));
+        return candidateFilters.some((filter) =>
+          currentFilters.includes(filter),
+        );
       })
     : [];
 
@@ -105,11 +106,35 @@
   });
 
   function openModeDetails(buildId: string): void {
+    if (selectedBuildId === buildId) {
+      return;
+    }
+
+    void playSwitchSound();
     selectedBuildId = buildId;
   }
 
   function closeModeDetails(): void {
+    void playSwitchSound();
     selectedBuildId = null;
+  }
+
+  function setModeScope(nextScope: "all" | "installed"): void {
+    if (modeScope === nextScope) {
+      return;
+    }
+
+    modeScope = nextScope;
+    void playSwitchSound();
+  }
+
+  function setSelectedFilter(nextFilter: string): void {
+    if (activeFilter === nextFilter) {
+      return;
+    }
+
+    activeFilter = nextFilter;
+    void playClickSound();
   }
 
   function sharedGenreLabel(build: BuildItem): string {
@@ -132,13 +157,52 @@
   }
 
   function launchMode(modeName: string): void {
+    if (launchInFlight) {
+      return;
+    }
+
     dispatch("launch", { modeName });
   }
 
-  function handleLaunchInteraction(modeName: string): void {
-    const nextRunningMode = uiRunningModeName === modeName ? null : modeName;
-    uiRunningModeName = nextRunningMode;
-    launchMode(modeName);
+  function installMode(modeName: string): void {
+    if (launchInFlight) {
+      return;
+    }
+
+    dispatch("install", { modeName });
+  }
+
+  function handleLaunchInteraction(build: BuildItem): void {
+    if (!build.installed || build.updateAvailable) {
+      installMode(build.name);
+      return;
+    }
+
+    launchMode(build.name);
+  }
+
+  function actionLabelForBuild(build: BuildItem): string {
+    if (launchInFlight && launchPendingModeName === build.name) {
+      if (build.updateAvailable) {
+        return "Обновление...";
+      }
+
+      return build.installed ? "Подготовка..." : "Установка...";
+    }
+
+    if (runningModeName === build.name) {
+      return "Закрыть игру";
+    }
+
+    if (build.updateAvailable) {
+      return "Обновить режим";
+    }
+
+    return build.installed ? "Запустить режим" : "Установить режим";
+  }
+
+  function actionButtonRunning(build: BuildItem): boolean {
+    return Boolean(build.installed && runningModeName === build.name);
   }
 
   function imageForBuild(build: BuildItem): string {
@@ -174,7 +238,10 @@
     return `/assets/${fileName}`;
   }
 
-  function findBestFuzzyImage(buildName: string, files: string[]): string | null {
+  function findBestFuzzyImage(
+    buildName: string,
+    files: string[],
+  ): string | null {
     if (files.length === 0) {
       return null;
     }
@@ -197,7 +264,6 @@
     return value.toLowerCase().replace(/[^a-zа-яё0-9]/gi, "");
   }
 
-  // Rough SequenceMatcher-like ratio based on LCS length.
   function sequenceSimilarity(a: string, b: string): number {
     if (!a.length && !b.length) {
       return 1;
@@ -235,7 +301,9 @@
         in:fly={{ x: 24, duration: 240, easing: cubicOut }}
         out:fade={{ duration: 130 }}
       >
-        <button type="button" class="back-btn" on:click={closeModeDetails}>Назад</button>
+        <button type="button" class="back-btn" on:click={closeModeDetails}
+          >Назад</button
+        >
 
         <article class="mode-details-card">
           <div class="mode-media-column">
@@ -259,33 +327,34 @@
             <button
               type="button"
               class="launch-detail-btn"
-              class:is-running={selectedBuildIsRunning}
-              on:click={() => handleLaunchInteraction(selectedBuild.name)}
+              class:is-running={actionButtonRunning(selectedBuild)}
+              disabled={launchInFlight}
+              on:click={() => handleLaunchInteraction(selectedBuild)}
             >
-              {#if selectedBuildIsRunning}
-                Закрыть игру
-              {:else}
-                Запустить режим
-              {/if}
+              {actionLabelForBuild(selectedBuild)}
             </button>
           </div>
 
           <div class="mode-details-content">
             <h2>{selectedBuild.name}</h2>
             <p class="mode-details-description">
-              {selectedBuild.description ?? "Описание режима пока не добавлено."}
+              {selectedBuild.description ??
+                "Описание режима пока не добавлено."}
             </p>
           </div>
 
           <div class="mode-details-meta">
-            Загрузчик, версия: {selectedBuild.loader ?? "Forge"}, {selectedBuild.gameVersion ?? "1.20.1"}
+            Загрузчик, версия: {selectedBuild.loader ?? "Forge"}, {selectedBuild.gameVersion ??
+              "1.20.1"}
           </div>
         </article>
 
         <section class="similar-section" aria-label="Похожие жанры">
           <h3>Похожие жанры</h3>
           {#if similarBuilds.length === 0}
-            <p class="similar-empty">Похожие режимы по жанру пока не найдены.</p>
+            <p class="similar-empty">
+              Похожие режимы по жанру пока не найдены.
+            </p>
           {:else}
             <div class="similar-grid">
               {#each similarBuilds as build (build.id)}
@@ -334,7 +403,7 @@
             class="scope-tab"
             class:active={modeScope === "all"}
             aria-selected={modeScope === "all"}
-            on:click={() => (modeScope = "all")}
+            on:click={() => setModeScope("all")}
           >
             Все режимы
           </button>
@@ -344,7 +413,7 @@
             class="scope-tab"
             class:active={modeScope === "installed"}
             aria-selected={modeScope === "installed"}
-            on:click={() => (modeScope = "installed")}
+            on:click={() => setModeScope("installed")}
           >
             Установленные
           </button>
@@ -352,7 +421,11 @@
 
         <div class="toolbar">
           <label class="search-field" aria-label="Поиск режима">
-            <input type="text" bind:value={searchValue} placeholder="Поиск режима по названию" />
+            <input
+              type="text"
+              bind:value={searchValue}
+              placeholder="Поиск режима по названию"
+            />
           </label>
 
           <div class="filter-row" aria-label="Фильтры режимов">
@@ -361,7 +434,7 @@
                 type="button"
                 class="filter-chip"
                 class:active={activeFilter === filter.id}
-                on:click={() => (activeFilter = filter.id)}
+                on:click={() => setSelectedFilter(filter.id)}
               >
                 {filter.label}
               </button>
@@ -370,7 +443,9 @@
         </div>
 
         {#if filteredBuilds.length === 0}
-          <div class="empty-state">По выбранным условиям режимы не найдены.</div>
+          <div class="empty-state">
+            По выбранным условиям режимы не найдены.
+          </div>
         {:else}
           <div class="modes-grid">
             {#each filteredBuilds as build (build.id)}
@@ -401,9 +476,12 @@
                 </div>
 
                 <div class="mode-name">{build.name}</div>
-                <div class="mode-meta">{build.loader ?? "Forge"} {build.gameVersion ?? "1.20.1"}</div>
+                <div class="mode-meta">
+                  {build.loader ?? "Forge"}
+                  {build.gameVersion ?? "1.20.1"}
+                </div>
 
-                {#if uiRunningModeName === build.name}
+                {#if runningModeName === build.name}
                   <span class="installed-badge running">Игра запущена</span>
                 {:else if build.installed}
                   <span class="installed-badge">Установлен</span>
@@ -499,7 +577,8 @@
 
   .search-field input:focus {
     border-color: var(--accent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--accent) 45%, transparent);
   }
 
   .search-field input::placeholder {
@@ -531,7 +610,8 @@
   .filter-chip:hover {
     transform: scale(1.04);
     border-color: var(--accent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--accent) 30%, transparent);
   }
 
   .filter-chip:active {
@@ -559,7 +639,8 @@
     padding: 8px 10px 16px 8px;
     scrollbar-gutter: stable;
     scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--accent) 45%, var(--line) 55%) var(--surface-main);
+    scrollbar-color: color-mix(in srgb, var(--accent) 45%, var(--line) 55%)
+      var(--surface-main);
   }
 
   .modes-grid::-webkit-scrollbar {
@@ -705,7 +786,8 @@
     overflow-x: hidden;
     overflow-y: auto;
     scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--accent) 52%, var(--line) 48%) var(--surface-main);
+    scrollbar-color: color-mix(in srgb, var(--accent) 52%, var(--line) 48%)
+      var(--surface-main);
   }
 
   .mode-details-view::-webkit-scrollbar {
@@ -755,7 +837,8 @@
   .back-btn:hover {
     padding: 9px 13px;
     border-color: var(--accent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+    box-shadow: inset 0 0 0 1px
+      color-mix(in srgb, var(--accent) 35%, transparent);
   }
 
   .back-btn:active {
@@ -836,6 +919,14 @@
 
   .launch-detail-btn:active {
     transform: scale(0.98);
+  }
+
+  .launch-detail-btn:disabled {
+    cursor: wait;
+    transform: none;
+    filter: none;
+    box-shadow: none;
+    opacity: 0.88;
   }
 
   .launch-detail-btn.is-running {
@@ -976,7 +1067,6 @@
     .similar-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-
   }
 
   @media (max-width: 780px) {
@@ -989,7 +1079,5 @@
     .similar-grid {
       grid-template-columns: 1fr;
     }
-
   }
 </style>
-

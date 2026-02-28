@@ -32,3 +32,6 @@ dotenvy = "0.15.7"
 argon2 = "0.5.3"
 uuid = { version = "1.21.0", features = ["v4", "serde"] }
 sysinfo = "0.33.1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha1 = "0.10"
+zip = "2.4"

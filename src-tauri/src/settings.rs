@@ -21,7 +21,7 @@ impl Default for LauncherSettings {
       theme: "dark".to_string(),
       java_args: "-XX:+UseG1GC -XX:+UnlockExperimentalVMOptions".to_string(),
       close_on_launch: false,
-      show_logs: true,
+      show_logs: false,
     }
   }
 }
