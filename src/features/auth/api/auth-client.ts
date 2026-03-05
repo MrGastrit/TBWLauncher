@@ -50,6 +50,40 @@ export async function changePasswordRequest(payload: ChangePasswordPayload): Pro
   await getInvoke()<void>('change_password', { payload })
 }
 
-export async function uploadSkinRequest(filePath: string): Promise<string> {
-  return getInvoke()<string>('upload_skin', { filePath })
+export async function uploadSkinRequest(
+  userId: string | null | undefined,
+  filePath: string,
+  identity?: string,
+): Promise<string> {
+  return getInvoke()<string>('upload_skin', {
+    userId: userId?.trim() || undefined,
+    identity: identity?.trim() || undefined,
+    filePath,
+  })
+}
+
+export async function uploadSkinDataRequest(
+  userId: string | null | undefined,
+  skinName: string,
+  skinDataUrl: string,
+  identity?: string,
+): Promise<string> {
+  return getInvoke()<string>('upload_skin_data', {
+    userId: userId?.trim() || undefined,
+    identity: identity?.trim() || undefined,
+    skinName,
+    skinDataUrl,
+  })
+}
+
+export async function setSkinUrlRequest(
+  userId: string | null | undefined,
+  skinUrl: string,
+  identity?: string,
+): Promise<void> {
+  await getInvoke()<void>('set_skin_url', {
+    userId: userId?.trim() || undefined,
+    identity: identity?.trim() || undefined,
+    skinUrl,
+  })
 }

@@ -8,8 +8,10 @@
   type AuthMode = 'register' | 'login'
 
   type AuthSuccessPayload = {
+    id: string
     nickname: string
     emailOrLogin: string
+    skinUrl?: string
   }
 
   const dispatch = createEventDispatcher<{ authSuccess: AuthSuccessPayload }>()
@@ -51,10 +53,17 @@
     statusType = 'success'
   }
 
-  function emitAuthSuccess(nickname: string, emailOrLogin: string): void {
+  function emitAuthSuccess(
+    id: string,
+    nickname: string,
+    emailOrLogin: string,
+    skinUrl?: string
+  ): void {
     dispatch('authSuccess', {
+      id,
       nickname,
-      emailOrLogin
+      emailOrLogin,
+      skinUrl
     })
   }
 
@@ -111,7 +120,12 @@
 
         localStorage.setItem(onboardingKey, 'true')
         setSuccess('Аккаунт зарегистрирован!')
-        emitAuthSuccess(result.user.nickname, result.user.email)
+        emitAuthSuccess(
+          result.user.id,
+          result.user.nickname,
+          result.user.email,
+          result.user.skinUrl
+        )
         return
       }
 
@@ -130,7 +144,12 @@
         password: loginPassword
       })
 
-      emitAuthSuccess(result.user.nickname, result.user.email)
+      emitAuthSuccess(
+        result.user.id,
+        result.user.nickname,
+        result.user.email,
+        result.user.skinUrl
+      )
     } catch (error) {
       console.error('Auth request failed:', error)
       const message = extractErrorMessage(error)

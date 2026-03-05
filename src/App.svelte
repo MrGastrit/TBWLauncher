@@ -5,14 +5,18 @@
   import { clearSession, restoreSession } from './features/auth/services/auth-service'
 
   type SessionUser = {
+    id: string
     nickname: string
     emailOrLogin: string
+    skinUrl?: string
   }
 
   let isAuthenticated = false
   let sessionUser: SessionUser = {
+    id: '',
     nickname: 'Player',
-    emailOrLogin: ''
+    emailOrLogin: '',
+    skinUrl: ''
   }
 
   onMount(() => {
@@ -29,8 +33,10 @@
     }
 
     sessionUser = {
+      id: restoredSession.user.id,
       nickname: restoredSession.user.nickname,
-      emailOrLogin: restoredSession.user.email
+      emailOrLogin: restoredSession.user.email,
+      skinUrl: restoredSession.user.skinUrl
     }
     isAuthenticated = true
 
@@ -48,8 +54,10 @@
     clearSession()
     isAuthenticated = false
     sessionUser = {
+      id: '',
       nickname: 'Player',
-      emailOrLogin: ''
+      emailOrLogin: '',
+      skinUrl: ''
     }
   }
 </script>

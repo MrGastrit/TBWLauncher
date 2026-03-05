@@ -2,6 +2,7 @@ use crate::{settings, AppState};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Cursor;
@@ -22,6 +23,16 @@ const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+const TBW_RUNTIME_BUNDLE_REPO: &str = "MrGastrit/tbw-gamemodes";
+const TBW_RUNTIME_BUNDLE_TAG_PREFIX: &str = "dot.tbw_";
+const TBW_RUNTIME_BUNDLE_ASSET_NAME: &str = "dot.tbw";
+const TBW_REQUIRED_VERSION_DIRS: [&str; 4] = [
+  "1.12.2",
+  "1.12.2-forge-14.23.5.2859",
+  "1.20.1",
+  "1.20.1-forge-47.4.10",
+];
+
 #[derive(Debug, Clone)]
 pub struct RunningGame {
   pub mode_name: String,
@@ -34,6 +45,7 @@ pub struct ToggleGameRuntimePayload {
   pub mode_name: String,
   pub nickname: String,
   pub game_version: Option<String>,
+  pub skin_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -118,6 +130,14 @@ struct BuildSourceEntry {
 #[serde(rename_all = "camelCase")]
 struct InstalledBuildMetadata {
   release_tag: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledRuntimeBundleMetadata {
+  release_tag: String,
+  directories: Vec<String>,
+  files: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -270,14 +290,44 @@ pub async fn toggle_game_runtime(
     .map(str::trim)
     .filter(|value| !value.is_empty())
     .map(str::to_string);
+  let launch_skin_url = payload
+    .skin_url
+    .as_deref()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string);
   let launch_settings = settings.clone();
   let progress_state = state.install_progress.clone();
   let task_progress_state = progress_state.clone();
+  let task_stage_progress_state = progress_state.clone();
   let pid = tauri::async_runtime::spawn_blocking(move || -> Result<u32, String> {
-    ensure_mode_build_current(&launch_mode_name, task_progress_state)?;
+    set_install_progress(
+      Some(&task_progress_state),
+      &launch_mode_name,
+      6,
+      "Проверка файлов режима...",
+    );
+    ensure_mode_build_current(&launch_mode_name, task_progress_state.clone())?;
+    set_install_progress(
+      Some(&task_stage_progress_state),
+      &launch_mode_name,
+      72,
+      "Подготовка запуска...",
+    );
     let launch_plan =
       resolve_launch_plan(&launch_mode_name, launch_game_version.as_deref())?;
-    spawn_game_process(&launch_plan, &launch_settings, &launch_nickname)
+    set_install_progress(
+      Some(&task_stage_progress_state),
+      &launch_mode_name,
+      92,
+      "Запуск игры...",
+    );
+    spawn_game_process(
+      &launch_plan,
+      &launch_settings,
+      &launch_nickname,
+      launch_skin_url.as_deref(),
+    )
   })
   .await
   .map_err(|error| format!("Failed to complete the launch task: {error}"))?;
@@ -329,6 +379,7 @@ fn install_build_blocking(
   progress_state: SharedInstallProgress,
 ) -> Result<BuildInstallationState, String> {
   let tbw_root = find_tbw_root()?;
+  ensure_tbw_runtime_bundle(&tbw_root, false, Some(&progress_state), mode_name)?;
   let source = find_build_source(&tbw_root, mode_name)?;
 
   if !build_source_has_remote_download(&source) {
@@ -360,6 +411,7 @@ fn ensure_mode_build_current(
   progress_state: SharedInstallProgress,
 ) -> Result<(), String> {
   let tbw_root = find_tbw_root()?;
+  ensure_tbw_runtime_bundle(&tbw_root, false, Some(&progress_state), mode_name)?;
 
   if let Some(source) = try_find_build_source(&tbw_root, mode_name)? {
     if build_source_has_remote_download(&source) {
@@ -539,6 +591,198 @@ fn format_compact_bytes(bytes: u64) -> String {
   format!("{bytes} B")
 }
 
+fn ensure_tbw_runtime_bundle(
+  tbw_root: &Path,
+  force_refresh: bool,
+  progress_state: Option<&SharedInstallProgress>,
+  mode_name: &str,
+) -> Result<(), String> {
+  let refresh_needed = force_refresh || tbw_runtime_bundle_needs_refresh(tbw_root)?;
+  if !refresh_needed {
+    return Ok(());
+  }
+
+  let roaming_dir = tbw_root.parent().ok_or_else(|| {
+    format!(
+      "Failed to resolve the parent Roaming directory for {}.",
+      tbw_root.display()
+    )
+  })?;
+
+  let downloads_dir = roaming_dir.join(".tbw-bootstrap");
+  ensure_directory_ready(&downloads_dir)?;
+
+  let temp_id = Uuid::new_v4().to_string();
+  let archive_path = downloads_dir.join(format!("dot-tbw-{temp_id}.zip"));
+  let extract_root = downloads_dir.join(format!("extract-{temp_id}"));
+  let client = build_http_client()?;
+  let desired_download = resolve_runtime_bundle_download(&client)?;
+
+  let install_result = (|| -> Result<(), String> {
+    set_install_progress(progress_state, mode_name, 2, "Проверка базовых файлов...");
+    let archive_bytes = download_bytes_with_progress(
+      &client,
+      &desired_download.download_url,
+      Some(|downloaded_bytes, total_bytes| {
+        let progress_percent = match total_bytes {
+          Some(total) if total > 0 => map_fraction_to_progress(downloaded_bytes, total, 2, 52),
+          _ => 12,
+        };
+        let stage_text = match total_bytes {
+          Some(total) if total > 0 => format!(
+            "Загрузка базовых файлов... {} из {}",
+            format_compact_bytes(downloaded_bytes),
+            format_compact_bytes(total)
+          ),
+          _ => format!("Загрузка базовых файлов... {}", format_compact_bytes(downloaded_bytes)),
+        };
+        set_install_progress(progress_state, mode_name, progress_percent, stage_text);
+      }),
+    )
+    .map_err(|error| format!("Failed to download {}: {error}", desired_download.download_url))?;
+
+    set_install_progress(progress_state, mode_name, 54, "Сохранение базового архива...");
+    fs::write(&archive_path, &archive_bytes)
+      .map_err(|error| format!("Failed to write {}: {error}", archive_path.display()))?;
+
+    ensure_directory_ready(&extract_root)?;
+    set_install_progress(progress_state, mode_name, 58, "Распаковка базовых файлов...");
+    let extract_progress_end = if force_refresh { 70 } else { 76 };
+    extract_zip_to_directory(
+      &archive_path,
+      &extract_root,
+      Some(|processed_entries, total_entries| {
+        let progress_percent = if total_entries == 0 {
+          extract_progress_end
+        } else {
+          map_fraction_to_progress(
+            processed_entries as u64,
+            total_entries as u64,
+            58,
+            extract_progress_end,
+          )
+        };
+        let stage_text = if total_entries == 0 {
+          "Распаковка базовых файлов...".to_string()
+        } else {
+          format!("Распаковка базовых файлов... {processed_entries}/{total_entries}")
+        };
+        set_install_progress(progress_state, mode_name, progress_percent, stage_text);
+      }),
+    )?;
+
+    let extracted_root = resolve_extracted_build_root(&extract_root)?;
+    let runtime_source_root = resolve_runtime_bundle_source_root(&extracted_root)?;
+    let merge_start = if force_refresh { 72 } else { 78 };
+    let merge_end = 96;
+    let mut on_progress = |processed_files: usize, total_files: usize| {
+      let progress_percent = if total_files == 0 {
+        merge_end
+      } else {
+        map_fraction_to_progress(processed_files as u64, total_files as u64, merge_start, merge_end)
+      };
+      let stage_text = if total_files == 0 {
+        "Обновление базовых файлов...".to_string()
+      } else {
+        format!("Обновление базовых файлов... {processed_files}/{total_files}")
+      };
+      set_install_progress(progress_state, mode_name, progress_percent, stage_text);
+    };
+
+    merge_directory_contents(&runtime_source_root, tbw_root, Some(&mut on_progress))?;
+    write_installed_runtime_bundle_metadata(
+      tbw_root,
+      &runtime_source_root,
+      desired_download.release_tag.as_deref(),
+    )?;
+
+    set_install_progress(progress_state, mode_name, 98, "Базовые файлы готовы.");
+    Ok(())
+  })();
+
+  let _ = fs::remove_file(&archive_path);
+  let _ = fs::remove_dir_all(&extract_root);
+
+  install_result
+}
+
+fn tbw_runtime_bundle_needs_refresh(tbw_root: &Path) -> Result<bool, String> {
+  if !tbw_root.is_dir() {
+    return Ok(true);
+  }
+
+  let java_storage_ready =
+    tbw_root.join("runtime").is_dir() || tbw_root.join("java_versions").is_dir();
+  let required_top_level_ready =
+    tbw_root.join("assets").is_dir() && tbw_root.join("libraries").is_dir() && java_storage_ready;
+
+  if !required_top_level_ready {
+    return Ok(true);
+  }
+
+  if !tbw_root.join("build_sources.json").is_file() {
+    return Ok(true);
+  }
+
+  let versions_dir = tbw_root.join("versions");
+  if !versions_dir.is_dir() {
+    return Ok(true);
+  }
+
+  let missing_required_version_dir = TBW_REQUIRED_VERSION_DIRS
+    .into_iter()
+    .any(|folder_name| !versions_dir.join(folder_name).is_dir());
+
+  if missing_required_version_dir {
+    return Ok(true);
+  }
+
+  let metadata = match read_installed_runtime_bundle_metadata(tbw_root) {
+    Ok(Some(metadata)) => metadata,
+    Ok(None) => return Ok(true),
+    Err(_) => return Ok(true),
+  };
+
+  if metadata.release_tag.trim().is_empty() {
+    return Ok(true);
+  }
+
+  let missing_directory = metadata
+    .directories
+    .iter()
+    .filter(|relative_path| !relative_path.trim().is_empty())
+    .any(|relative_path| !tbw_root.join(Path::new(relative_path)).is_dir());
+
+  if missing_directory {
+    return Ok(true);
+  }
+
+  let missing_file = metadata
+    .files
+    .iter()
+    .filter(|relative_path| !relative_path.trim().is_empty())
+    .any(|relative_path| !tbw_root.join(Path::new(relative_path)).is_file());
+
+  Ok(missing_file)
+}
+
+fn resolve_runtime_bundle_source_root(extracted_root: &Path) -> Result<PathBuf, String> {
+  if extracted_root
+    .file_name()
+    .and_then(|value| value.to_str())
+    .is_some_and(|value| value.eq_ignore_ascii_case(".tbw"))
+  {
+    return Ok(extracted_root.to_path_buf());
+  }
+
+  let nested_tbw = extracted_root.join(".tbw");
+  if nested_tbw.is_dir() {
+    return Ok(nested_tbw);
+  }
+
+  Ok(extracted_root.to_path_buf())
+}
+
 fn read_build_sources_manifest(tbw_root: &Path) -> Result<BuildSourceManifest, String> {
   let manifest_path = tbw_root.join("build_sources.json");
   let raw = fs::read_to_string(&manifest_path)
@@ -646,6 +890,16 @@ fn parse_github_release_tag(download_url: &str) -> Option<String> {
   (!trimmed.is_empty()).then_some(trimmed.to_string())
 }
 
+fn resolve_runtime_bundle_download(http_client: &Client) -> Result<ResolvedBuildDownload, String> {
+  resolve_github_release_download(
+    http_client,
+    TBW_RUNTIME_BUNDLE_REPO,
+    TBW_RUNTIME_BUNDLE_TAG_PREFIX,
+    TBW_RUNTIME_BUNDLE_ASSET_NAME,
+    "the base .tbw runtime bundle",
+  )
+}
+
 fn resolve_build_download(
   http_client: &Client,
   source: &BuildSourceEntry,
@@ -691,18 +945,6 @@ fn resolve_github_build_download(
     .map(str::trim)
     .filter(|value| !value.is_empty())
     .ok_or_else(|| format!("Build source \"{}\" does not contain repo.", source.mode_name))?;
-  let api_url = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
-  let response = http_client
-    .get(&api_url)
-    .send()
-    .and_then(|value| value.error_for_status())
-    .map_err(|error| format!("Failed to read GitHub releases for {repo}: {error}"))?;
-  let response_body = response
-    .text()
-    .map_err(|error| format!("Failed to read the GitHub response body for {repo}: {error}"))?;
-  let releases = serde_json::from_str::<Vec<GithubRelease>>(&response_body)
-    .map_err(|error| format!("GitHub returned an invalid releases payload for {repo}: {error}"))?;
-
   let default_prefix = source.mode_name.trim();
   let tag_prefix = source
     .tag_prefix
@@ -718,6 +960,36 @@ fn resolve_github_build_download(
     .unwrap_or(default_prefix)
     .to_ascii_lowercase();
 
+  resolve_github_release_download(
+    http_client,
+    repo,
+    tag_prefix,
+    &asset_hint,
+    &format!("build source \"{}\"", source.mode_name),
+  )
+}
+
+fn resolve_github_release_download(
+  http_client: &Client,
+  repo: &str,
+  tag_prefix: &str,
+  asset_hint: &str,
+  resource_name: &str,
+) -> Result<ResolvedBuildDownload, String> {
+  let api_url = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
+  let response = http_client
+    .get(&api_url)
+    .send()
+    .and_then(|value| value.error_for_status())
+    .map_err(|error| format!("Failed to read GitHub releases for {repo}: {error}"))?;
+  let response_body = response
+    .text()
+    .map_err(|error| format!("Failed to read the GitHub response body for {repo}: {error}"))?;
+  let releases = serde_json::from_str::<Vec<GithubRelease>>(&response_body)
+    .map_err(|error| format!("GitHub returned an invalid releases payload for {repo}: {error}"))?;
+
+  let tag_prefix_lower = tag_prefix.to_ascii_lowercase();
+  let asset_hint_lower = asset_hint.to_ascii_lowercase();
   let release = releases
     .into_iter()
     .find(|release| {
@@ -726,11 +998,11 @@ fn resolve_github_build_download(
         && release
           .tag_name
           .to_ascii_lowercase()
-          .starts_with(&tag_prefix.to_ascii_lowercase())
+          .starts_with(&tag_prefix_lower)
     })
     .ok_or_else(|| {
       format!(
-        "No published GitHub release matched prefix \"{tag_prefix}\" in {repo}."
+        "No published GitHub release matched prefix \"{tag_prefix}\" for {resource_name} in {repo}."
       )
     })?;
 
@@ -740,7 +1012,7 @@ fn resolve_github_build_download(
     .find(|asset| {
       let asset_name = asset.name.to_ascii_lowercase();
       asset_name.ends_with(".zip")
-        && (asset_hint.is_empty() || asset_name.contains(&asset_hint))
+        && (asset_hint_lower.is_empty() || asset_name.contains(&asset_hint_lower))
     })
     .or_else(|| {
       release
@@ -750,7 +1022,7 @@ fn resolve_github_build_download(
     })
     .ok_or_else(|| {
       format!(
-        "Release \"{}\" in {repo} does not contain a zip asset.",
+        "Release \"{}\" for {resource_name} in {repo} does not contain a zip asset.",
         release.tag_name
       )
     })?;
@@ -862,6 +1134,52 @@ fn write_installed_build_metadata(
     .map_err(|error| format!("Failed to write {}: {error}", metadata_path.display()))
 }
 
+fn read_installed_runtime_bundle_metadata(
+  tbw_root: &Path,
+) -> Result<Option<InstalledRuntimeBundleMetadata>, String> {
+  let metadata_path = tbw_root.join(".tbw-runtime.json");
+  if !metadata_path.is_file() {
+    return Ok(None);
+  }
+
+  let raw = fs::read_to_string(&metadata_path)
+    .map_err(|error| format!("Failed to read {}: {error}", metadata_path.display()))?;
+
+  serde_json::from_str::<InstalledRuntimeBundleMetadata>(&raw)
+    .map(Some)
+    .map_err(|error| format!("The file {} is invalid: {error}", metadata_path.display()))
+}
+
+fn write_installed_runtime_bundle_metadata(
+  tbw_root: &Path,
+  source_root: &Path,
+  release_tag: Option<&str>,
+) -> Result<(), String> {
+  ensure_directory_ready(tbw_root)?;
+
+  let metadata_path = tbw_root.join(".tbw-runtime.json");
+  let payload = InstalledRuntimeBundleMetadata {
+    release_tag: release_tag
+      .map(str::trim)
+      .filter(|value| !value.is_empty())
+      .unwrap_or_default()
+      .to_string(),
+    directories: collect_relative_directory_paths(source_root)?
+      .into_iter()
+      .map(|path| path.to_string_lossy().to_string())
+      .collect(),
+    files: collect_relative_file_paths(source_root)?
+      .into_iter()
+      .map(|path| path.to_string_lossy().to_string())
+      .collect(),
+  };
+  let serialized = serde_json::to_string_pretty(&payload)
+    .map_err(|error| format!("Failed to serialize {}: {error}", metadata_path.display()))?;
+
+  fs::write(&metadata_path, serialized)
+    .map_err(|error| format!("Failed to write {}: {error}", metadata_path.display()))
+}
+
 fn is_build_installed_in_versions(versions_dir: &Path, mode_name: &str) -> Result<bool, String> {
   let target = normalize_mode_name(mode_name);
   if target.is_empty() {
@@ -951,6 +1269,115 @@ where
     if let Some(callback) = on_progress.as_mut() {
       callback(index + 1, total_entries);
     }
+  }
+
+  Ok(())
+}
+
+fn merge_directory_contents<F>(
+  source_root: &Path,
+  target_root: &Path,
+  mut on_progress: Option<&mut F>,
+) -> Result<(), String>
+where
+  F: FnMut(usize, usize),
+{
+  ensure_directory_ready(target_root)?;
+
+  let directory_entries = collect_relative_directory_paths(source_root)?;
+  for relative_dir in directory_entries {
+    ensure_directory_ready(&target_root.join(relative_dir))?;
+  }
+
+  let file_entries = collect_relative_file_paths(source_root)?;
+  let total_files = file_entries.len();
+
+  for (index, relative_file) in file_entries.iter().enumerate() {
+    let source_path = source_root.join(relative_file);
+    let target_path = target_root.join(relative_file);
+
+    if target_path.exists() && should_preserve_existing_runtime_file(relative_file) {
+      if let Some(callback) = on_progress.as_mut() {
+        (**callback)(index + 1, total_files);
+      }
+      continue;
+    }
+
+    if let Some(parent) = target_path.parent() {
+      ensure_directory_ready(parent)?;
+    }
+
+    fs::copy(&source_path, &target_path).map_err(|error| {
+      format!(
+        "Failed to copy {} into {}: {error}",
+        source_path.display(),
+        target_path.display()
+      )
+    })?;
+
+    if let Some(callback) = on_progress.as_mut() {
+      (**callback)(index + 1, total_files);
+    }
+  }
+
+  Ok(())
+}
+
+fn should_preserve_existing_runtime_file(relative_path: &Path) -> bool {
+  relative_path.components().count() == 1
+    && relative_path
+      .file_name()
+      .and_then(|value| value.to_str())
+      .is_some_and(|value| value.eq_ignore_ascii_case("build_sources.json"))
+}
+
+fn collect_relative_directory_paths(source_root: &Path) -> Result<Vec<PathBuf>, String> {
+  let mut directories = Vec::new();
+  let mut unused_files = Vec::new();
+  collect_relative_entries(source_root, source_root, &mut directories, &mut unused_files)?;
+  directories.sort();
+  Ok(directories)
+}
+
+fn collect_relative_file_paths(source_root: &Path) -> Result<Vec<PathBuf>, String> {
+  let mut files = Vec::new();
+  let mut unused_directories = Vec::new();
+  collect_relative_entries(source_root, source_root, &mut unused_directories, &mut files)?;
+  files.sort();
+  Ok(files)
+}
+
+fn collect_relative_entries(
+  source_root: &Path,
+  current_dir: &Path,
+  directories: &mut Vec<PathBuf>,
+  files: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+  let entries = fs::read_dir(current_dir)
+    .map_err(|error| format!("Failed to read directory {}: {error}", current_dir.display()))?;
+
+  for entry in entries {
+    let entry = entry.map_err(|error| {
+      format!(
+        "Failed to read directory entry in {}: {error}",
+        current_dir.display()
+      )
+    })?;
+    let path = entry.path();
+    let relative_path = path.strip_prefix(source_root).map_err(|error| {
+      format!(
+        "Failed to resolve the relative path for {}: {error}",
+        path.display()
+      )
+    })?;
+
+    if path.is_dir() {
+      directories.push(relative_path.to_path_buf());
+      collect_relative_entries(source_root, &path, directories, files)?;
+      continue;
+    }
+
+    files.push(relative_path.to_path_buf());
   }
 
   Ok(())
@@ -1048,7 +1475,18 @@ fn spawn_game_process(
   plan: &LaunchPlan,
   settings: &settings::LauncherSettings,
   nickname: &str,
+  selected_skin_url: Option<&str>,
 ) -> Result<u32, String> {
+  if let Err(error) = enforce_local_skin_only_configuration(plan) {
+    eprintln!("Failed to enforce local-only skin configuration: {error}");
+  }
+
+  if let Some(skin_url) = selected_skin_url {
+    if let Err(error) = sync_selected_skin_into_game(plan, nickname, skin_url) {
+      eprintln!("Failed to prepare selected skin for launch: {error}");
+    }
+  }
+
   let mut launch_args = build_java_arguments(plan, settings)?;
   launch_args.extend(build_game_arguments(plan, nickname));
 
@@ -1085,6 +1523,204 @@ fn spawn_game_process(
     .map_err(|error| format!("Failed to start the Java process: {error}"))?;
 
   Ok(child.id())
+}
+
+fn sync_selected_skin_into_game(
+  plan: &LaunchPlan,
+  nickname: &str,
+  selected_skin_url: &str,
+) -> Result<(), String> {
+  let source_skin_path = PathBuf::from(selected_skin_url.trim());
+  if !source_skin_path.is_file() {
+    return Err(format!(
+      "Selected skin file {} was not found.",
+      source_skin_path.display()
+    ));
+  }
+
+  let player_file_names = skin_player_file_name_candidates(nickname);
+  let target_roots = local_skin_target_roots(plan);
+
+  for target_root in target_roots {
+    fs::create_dir_all(&target_root).map_err(|error| {
+      format!(
+        "Failed to create directory {}: {error}",
+        target_root.display()
+      )
+    })?;
+
+    for player_file_name in &player_file_names {
+      let target_path = target_root.join(format!("{player_file_name}.png"));
+      fs::copy(&source_skin_path, &target_path).map_err(|error| {
+        format!(
+          "Failed to copy selected skin from {} to {}: {error}",
+          source_skin_path.display(),
+          target_path.display()
+        )
+      })?;
+    }
+  }
+
+  Ok(())
+}
+
+fn enforce_local_skin_only_configuration(plan: &LaunchPlan) -> Result<(), String> {
+  let payload = serde_json::json!({
+    "enable": true,
+    "loadlist": [
+      {
+        "name": "LocalSkin",
+        "type": "Legacy",
+        "checkPNG": false,
+        "skin": "LocalSkin/skins/{USERNAME}.png",
+        "model": "auto",
+        "cape": "LocalSkin/capes/{USERNAME}.png",
+        "elytra": "LocalSkin/elytras/{USERNAME}.png"
+      }
+    ],
+    "sources": [
+      {
+        "name": "LocalSkin",
+        "type": "Legacy",
+        "checkPNG": false,
+        "skin": "LocalSkin/skins/{USERNAME}.png",
+        "model": "auto",
+        "cape": "LocalSkin/capes/{USERNAME}.png",
+        "elytra": "LocalSkin/elytras/{USERNAME}.png"
+      }
+    ],
+    "enableMojangSkin": false,
+    "enableMojangCape": false,
+    "enableMojangElytra": false,
+    "enableMojangProfile": false,
+    "enableMojang": false,
+    "enableDynamicSkull": false,
+    "enableUpdateSkull": false,
+    "enableLocalProfileCache": false
+  });
+  let serialized = serde_json::to_string_pretty(&payload)
+    .map_err(|error| format!("Failed to serialize local skin config: {error}"))?;
+
+  let config_paths = custom_skin_loader_config_paths(plan);
+
+  for config_path in config_paths {
+    if let Some(parent_dir) = config_path.parent() {
+      fs::create_dir_all(parent_dir).map_err(|error| {
+        format!(
+          "Failed to create directory {}: {error}",
+          parent_dir.display()
+        )
+      })?;
+    }
+
+    fs::write(&config_path, &serialized).map_err(|error| {
+      format!(
+        "Failed to write {}: {error}",
+        config_path.display()
+      )
+    })?;
+  }
+
+  Ok(())
+}
+
+fn local_skin_target_roots(plan: &LaunchPlan) -> Vec<PathBuf> {
+  let mut roots = Vec::new();
+  let base_dirs = [plan.game_dir.as_path(), plan.working_dir.as_path()];
+
+  for base_dir in base_dirs {
+    roots.push(base_dir.join("LocalSkin").join("skins"));
+    roots.push(
+      base_dir
+        .join("CustomSkinLoader")
+        .join("LocalSkin")
+        .join("skins"),
+    );
+  }
+
+  roots
+}
+
+fn custom_skin_loader_config_paths(plan: &LaunchPlan) -> Vec<PathBuf> {
+  let mut paths = Vec::new();
+  let base_dirs = [plan.game_dir.as_path(), plan.working_dir.as_path()];
+
+  for base_dir in base_dirs {
+    paths.push(
+      base_dir
+        .join("CustomSkinLoader")
+        .join("CustomSkinLoader.json"),
+    );
+    paths.push(base_dir.join("CustomSkinLoader.json"));
+    paths.push(
+      base_dir
+        .join("config")
+        .join("CustomSkinLoader")
+        .join("CustomSkinLoader.json"),
+    );
+    paths.push(
+      base_dir
+        .join("config")
+        .join("CustomSkinLoader.json"),
+    );
+  }
+
+  paths
+}
+
+fn skin_player_file_name_candidates(nickname: &str) -> Vec<String> {
+  let trimmed_nickname = nickname.trim();
+  let sanitized_nickname = sanitize_player_file_name(trimmed_nickname);
+  let offline_uuid = offline_uuid_for_player(trimmed_nickname);
+  let mut seen = HashSet::new();
+  let mut result = Vec::new();
+  let candidates = [
+    trimmed_nickname.to_string(),
+    trimmed_nickname.to_ascii_lowercase(),
+    sanitized_nickname.clone(),
+    sanitized_nickname.to_ascii_lowercase(),
+    offline_uuid.clone(),
+    offline_uuid.replace('-', ""),
+  ];
+
+  for candidate in candidates {
+    let safe_candidate = sanitize_player_file_name(candidate.as_str());
+    if safe_candidate.is_empty() {
+      continue;
+    }
+
+    if seen.insert(safe_candidate.clone()) {
+      result.push(safe_candidate);
+    }
+  }
+
+  if result.is_empty() {
+    result.push("Player".to_string());
+  }
+
+  result
+}
+
+fn sanitize_player_file_name(value: &str) -> String {
+  let sanitized = value
+    .trim()
+    .chars()
+    .map(|ch| {
+      if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+        || ch.is_control()
+      {
+        '_'
+      } else {
+        ch
+      }
+    })
+    .collect::<String>();
+
+  if sanitized.is_empty() {
+    "Player".to_string()
+  } else {
+    sanitized
+  }
 }
 
 #[cfg(windows)]
@@ -2564,10 +3200,12 @@ fn resolve_game_dir(
 
 fn resolve_java_executable(tbw_root: &Path, required_major: u32) -> Result<OsString, String> {
   let mut candidates = Vec::new();
-  let runtime_dir = tbw_root.join("runtime");
+  let bundled_java_roots = [tbw_root.join("runtime"), tbw_root.join("java_versions")];
 
-  if runtime_dir.exists() {
-    collect_named_files(&runtime_dir, "java.exe", &mut candidates)?;
+  for runtime_dir in bundled_java_roots {
+    if runtime_dir.exists() {
+      collect_named_files(&runtime_dir, "java.exe", &mut candidates)?;
+    }
   }
 
   collect_path_java_candidates(&mut candidates);
@@ -2866,7 +3504,7 @@ fn ensure_directory_exists(path: &Path, message: &str) -> Result<(), String> {
   Err(message.to_string())
 }
 
-fn find_tbw_root() -> Result<PathBuf, String> {
+pub(crate) fn find_tbw_root() -> Result<PathBuf, String> {
   #[cfg(windows)]
   {
     if let Some(app_data) = std::env::var_os("APPDATA") {

@@ -97,6 +97,7 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "base64 0.22.1",
  "dotenvy",
  "log",
  "reqwest 0.12.28",

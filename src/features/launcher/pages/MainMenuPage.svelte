@@ -3,6 +3,7 @@
   import { cubicOut } from "svelte/easing";
   import { fade, fly, scale } from "svelte/transition";
   import BuildShowcase from "../components/BuildShowcase.svelte";
+  import SkinStudio from "../components/SkinStudio.svelte";
   import AccountSettingsPanel from "../components/AccountSettingsPanel.svelte";
   import LauncherSettingsPanel from "../components/LauncherSettingsPanel.svelte";
   import {
@@ -13,6 +14,7 @@
     getInstallProgressState as getInstallProgressStateCommand,
     installBuild as installBuildCommand,
     toggleGameRuntime as toggleGameRuntimeCommand,
+    updateDiscordPresence as updateDiscordPresenceCommand,
   } from "../services/game-runtime-service";
   import {
     attachHoverSounds,
@@ -23,8 +25,10 @@
   } from "../services/ui-sound";
 
   type SessionUser = {
+    id: string;
     nickname: string;
     emailOrLogin: string;
+    skinUrl?: string;
   };
 
   type MainTab = "home" | "skins" | "modes";
@@ -57,11 +61,13 @@
 
   const themeStorageKey = "tbwlauncher-theme";
   const recentModesStorageKey = "tbwlauncher-recent-modes";
+  const skinPreviewStorageKey = "tbwlauncher-skin-preview";
 
   let activeTab: MainTab = "home";
   let viewMode: ViewMode = "home";
   let theme: ThemeMode = "dark";
   let skinPreviewUrl = "";
+  let selectedSkinUrl = "";
   let showSignOutConfirm = false;
   let runningModeName: string | null = null;
   let openModeRequest: OpenModeRequest | null = null;
@@ -78,6 +84,9 @@
   let usingRealLaunchProgress = false;
   let runtimeStatePollTimer: ReturnType<typeof setInterval> | null = null;
   let installedBuildStateByName: Record<string, BuildInstallationState> = {};
+  let discordPresenceReady = false;
+  let lastDiscordPresenceModeName: string | null | undefined = undefined;
+  let lastDiscordPresenceNickname: string | undefined = undefined;
 
   let recentModes: string[] = [];
 
@@ -257,6 +266,9 @@
   $: recentBuilds = recentModes
     .map((modeName) => builds.find((build) => build.name === modeName))
     .filter(Boolean) as BuildItem[];
+  $: if (!selectedSkinUrl && user.skinUrl?.trim()) {
+    selectedSkinUrl = user.skinUrl.trim();
+  }
 
   $: accountInitials = user.nickname.trim().slice(0, 1).toUpperCase() || "P";
 
@@ -278,9 +290,20 @@
       }
     }
 
+    const storedSkinPreview = localStorage.getItem(skinPreviewStorageKey);
+    if (storedSkinPreview) {
+      skinPreviewUrl = storedSkinPreview;
+    }
+    selectedSkinUrl = user.skinUrl?.trim() ?? "";
+
     applyTheme(theme);
     void refreshRuntimeState();
     void refreshBuildInstallationStates();
+    const currentNickname = user.nickname.trim();
+    discordPresenceReady = true;
+    lastDiscordPresenceModeName = runningModeName;
+    lastDiscordPresenceNickname = currentNickname;
+    void syncDiscordPresence(runningModeName, currentNickname);
 
     const detachHoverSounds = launcherRootElement
       ? attachHoverSounds(launcherRootElement)
@@ -288,6 +311,7 @@
     const handleWindowFocus = () => {
       void refreshRuntimeState();
       void refreshBuildInstallationStates();
+      void syncDiscordPresence(runningModeName, user.nickname.trim());
     };
 
     if (typeof window !== "undefined") {
@@ -351,10 +375,111 @@
       ...user,
       nickname: nextNickname,
     };
+
+    if (discordPresenceReady) {
+      void syncDiscordPresence(runningModeName, nextNickname.trim());
+    }
   }
 
   function applyTheme(nextTheme: ThemeMode): void {
     document.documentElement.dataset.theme = nextTheme;
+  }
+
+  function loadImage(source: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Failed to load skin image."));
+      image.src = source;
+    });
+  }
+
+  async function buildFacePreviewUrl(sourceUrl: string): Promise<string> {
+    const source = sourceUrl.trim();
+    if (!source) {
+      return sourceUrl;
+    }
+
+    const image = await loadImage(source);
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = 64;
+    sourceCanvas.height = 64;
+    const sourceContext = sourceCanvas.getContext("2d");
+    if (!sourceContext) {
+      return sourceUrl;
+    }
+
+    sourceContext.imageSmoothingEnabled = false;
+    sourceContext.clearRect(0, 0, 64, 64);
+    sourceContext.drawImage(image, 0, 0, 64, 64);
+
+    const faceCanvas = document.createElement("canvas");
+    faceCanvas.width = 8;
+    faceCanvas.height = 8;
+    const faceContext = faceCanvas.getContext("2d");
+    if (!faceContext) {
+      return sourceUrl;
+    }
+
+    faceContext.imageSmoothingEnabled = false;
+    faceContext.clearRect(0, 0, 8, 8);
+    faceContext.drawImage(sourceCanvas, 8, 8, 8, 8, 0, 0, 8, 8);
+    faceContext.drawImage(sourceCanvas, 40, 8, 8, 8, 0, 0, 8, 8);
+
+    const scaledCanvas = document.createElement("canvas");
+    scaledCanvas.width = 64;
+    scaledCanvas.height = 64;
+    const scaledContext = scaledCanvas.getContext("2d");
+    if (!scaledContext) {
+      return sourceUrl;
+    }
+
+    scaledContext.imageSmoothingEnabled = false;
+    scaledContext.clearRect(0, 0, 64, 64);
+    scaledContext.drawImage(faceCanvas, 0, 0, 8, 8, 0, 0, 64, 64);
+    return scaledCanvas.toDataURL("image/png");
+  }
+
+  async function setSkinFacePreview(sourceUrl: string): Promise<void> {
+    try {
+      const faceUrl = await buildFacePreviewUrl(sourceUrl);
+      skinPreviewUrl = faceUrl;
+      localStorage.setItem(skinPreviewStorageKey, faceUrl);
+    } catch {
+      skinPreviewUrl = sourceUrl;
+      localStorage.setItem(skinPreviewStorageKey, sourceUrl);
+    }
+  }
+
+  function handleSkinPreviewChange(
+    event: CustomEvent<{
+      previewUrl: string;
+      facePreviewUrl: string;
+      uploadedSkinUrl?: string;
+    }>,
+  ): void {
+    const nextUploadedSkinUrl = event.detail.uploadedSkinUrl?.trim();
+    if (nextUploadedSkinUrl) {
+      selectedSkinUrl = nextUploadedSkinUrl;
+      user = {
+        ...user,
+        skinUrl: nextUploadedSkinUrl,
+      };
+    }
+
+    const nextFacePreviewUrl = event.detail.facePreviewUrl?.trim();
+    if (nextFacePreviewUrl) {
+      skinPreviewUrl = nextFacePreviewUrl;
+      localStorage.setItem(skinPreviewStorageKey, nextFacePreviewUrl);
+      return;
+    }
+
+    const nextPreviewUrl = event.detail.previewUrl?.trim();
+    if (!nextPreviewUrl) {
+      return;
+    }
+
+    void setSkinFacePreview(nextPreviewUrl);
   }
 
   function makeBuildId(name: string): string {
@@ -386,6 +511,27 @@
     }
 
     return "Не удалось запустить игру.";
+  }
+
+  async function syncDiscordPresence(
+    activeModeName: string | null,
+    nickname: string,
+  ): Promise<void> {
+    try {
+      await updateDiscordPresenceCommand(activeModeName, nickname);
+    } catch (error) {
+      console.error("Failed to sync Discord RPC state:", error);
+    }
+  }
+
+  $: if (
+    discordPresenceReady &&
+    (runningModeName !== lastDiscordPresenceModeName ||
+      user.nickname.trim() !== lastDiscordPresenceNickname)
+  ) {
+    lastDiscordPresenceModeName = runningModeName;
+    lastDiscordPresenceNickname = user.nickname.trim();
+    void syncDiscordPresence(runningModeName, user.nickname.trim());
   }
 
   async function refreshRuntimeState(): Promise<void> {
@@ -447,15 +593,8 @@
     clearLaunchProgressTimers();
     launchPendingModeName = modeName;
     showLaunchProgress = true;
-    launchProgress = 8;
+    launchProgress = 6;
     launchStatusText = statusText;
-
-    launchProgressTimer = setInterval(() => {
-      launchProgress = Math.min(
-        92,
-        launchProgress + Math.max(2, Math.round((100 - launchProgress) / 10)),
-      );
-    }, 180);
 
     void syncInstallProgress(modeName);
     installProgressPollTimer = setInterval(() => {
@@ -563,6 +702,7 @@
         modeName,
         user.nickname,
         build?.gameVersion,
+        selectedSkinUrl || undefined,
       );
 
       runningModeName = runtimeState.activeModeName;
@@ -843,10 +983,12 @@
                 <div class="recent-reserved-space" aria-hidden="true"></div>
               </section>
             {:else if activeTab === "skins"}
-              <section class="tab-placeholder">
-                <h2>Скины</h2>
-                <p>Говно Говно Говно Говно Говно Говно</p>
-              </section>
+              <SkinStudio
+                userId={user.id}
+                userIdentity={user.emailOrLogin}
+                initialStoredSkinUrl={selectedSkinUrl}
+                on:skinchange={handleSkinPreviewChange}
+              />
             {:else}
               <BuildShowcase
                 {builds}

@@ -47,12 +47,14 @@ export async function toggleGameRuntime(
   modeName: string,
   nickname: string,
   gameVersion?: string,
+  skinUrl?: string,
 ): Promise<GameRuntimeState> {
   return getInvoke()<GameRuntimeState>('toggle_game_runtime', {
     payload: {
       modeName,
       nickname,
       gameVersion,
+      skinUrl,
     },
   })
 }
@@ -83,4 +85,16 @@ export async function installBuild(
 
 export async function getInstallProgressState(): Promise<BuildInstallProgressState | null> {
   return getInvoke()<BuildInstallProgressState | null>('get_install_progress_state')
+}
+
+export async function updateDiscordPresence(
+  activeModeName: string | null,
+  nickname: string,
+): Promise<void> {
+  await getInvoke()<null>('update_discord_presence', {
+    payload: {
+      activeModeName,
+      nickname,
+    },
+  })
 }

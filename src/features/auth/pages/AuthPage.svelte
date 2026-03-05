@@ -3,8 +3,10 @@
   import { createEventDispatcher } from 'svelte'
 
   type AuthSuccessPayload = {
+    id: string
     nickname: string
     emailOrLogin: string
+    skinUrl?: string
   }
 
   const dispatch = createEventDispatcher<{ authSuccess: AuthSuccessPayload }>()

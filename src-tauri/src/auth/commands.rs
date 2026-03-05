@@ -47,9 +47,36 @@ pub async fn change_password(
 #[tauri::command]
 pub async fn upload_skin(
   state: tauri::State<'_, AppState>,
+  user_id: Option<String>,
+  identity: Option<String>,
   file_path: String,
 ) -> Result<String, String> {
-  service::upload_skin(&state.pool, file_path)
+  service::upload_skin(&state.pool, user_id, identity, file_path)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn upload_skin_data(
+  state: tauri::State<'_, AppState>,
+  user_id: Option<String>,
+  identity: Option<String>,
+  skin_name: Option<String>,
+  skin_data_url: String,
+) -> Result<String, String> {
+  service::upload_skin_data(&state.pool, user_id, identity, skin_name, skin_data_url)
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn set_skin_url(
+  state: tauri::State<'_, AppState>,
+  user_id: Option<String>,
+  identity: Option<String>,
+  skin_url: String,
+) -> Result<(), String> {
+  service::set_skin_url(&state.pool, user_id, identity, skin_url)
     .await
     .map_err(|error| error.to_string())
 }

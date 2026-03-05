@@ -47,3 +47,16 @@ pub async fn update_password_hash(pool: &PgPool, user_id: &str, password_hash: &
     .await?;
   Ok(())
 }
+
+pub async fn update_skin_url(
+  pool: &PgPool,
+  user_id: &str,
+  skin_url: Option<&str>,
+) -> Result<(), sqlx::Error> {
+  sqlx::query("UPDATE users SET skin_url = $1 WHERE id::text = $2")
+    .bind(skin_url)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+  Ok(())
+}

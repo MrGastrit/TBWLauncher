@@ -1,4 +1,5 @@
 mod auth;
+mod discord_rpc;
 mod game;
 mod settings;
 
@@ -40,6 +41,9 @@ pub fn run() {
       auth::commands::update_account,
       auth::commands::change_password,
       auth::commands::upload_skin,
+      auth::commands::upload_skin_data,
+      auth::commands::set_skin_url,
+      discord_rpc::update_discord_presence,
       game::get_build_installation_states,
       game::get_game_runtime_state,
       game::get_install_progress_state,
