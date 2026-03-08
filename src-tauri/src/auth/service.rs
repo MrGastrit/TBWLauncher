@@ -13,12 +13,33 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+const MIN_NICKNAME_LEN: usize = 3;
+const MAX_NICKNAME_LEN: usize = 24;
+
 pub async fn register(pool: &PgPool, payload: RegisterPayload) -> Result<AuthResult, AuthError> {
+  let normalized_email = payload.email.trim();
+  if normalized_email.is_empty() {
+    return Err(AuthError::Validation("Email обязателен.".into()));
+  }
+
+  let normalized_nickname = payload.nickname.trim();
+  if normalized_nickname.len() < MIN_NICKNAME_LEN {
+    return Err(AuthError::Validation("Ник должен содержать минимум 3 символа.".into()));
+  }
+  if normalized_nickname.len() > MAX_NICKNAME_LEN {
+    return Err(AuthError::Validation("Ник не должен превышать 24 символа.".into()));
+  }
+  if !is_valid_registration_nickname(normalized_nickname) {
+    return Err(AuthError::Validation(
+      "Ник может содержать только английские буквы, цифры и нижнее подчеркивание (_).".into(),
+    ));
+  }
+
   if payload.password != payload.repeat_password {
     return Err(AuthError::Validation("Пароли не совпадают.".into()));
   }
 
-  let existing_email = repository::find_user_by_identity(pool, &payload.email)
+  let existing_email = repository::find_user_by_identity(pool, normalized_email)
     .await
     .map_err(|error| AuthError::Internal(error.to_string()))?;
 
@@ -26,7 +47,7 @@ pub async fn register(pool: &PgPool, payload: RegisterPayload) -> Result<AuthRes
     return Err(AuthError::Validation("Пользователь с таким email уже существует.".into()));
   }
 
-  let existing_nickname = repository::find_user_by_identity(pool, &payload.nickname)
+  let existing_nickname = repository::find_user_by_identity(pool, normalized_nickname)
     .await
     .map_err(|error| AuthError::Internal(error.to_string()))?;
 
@@ -34,9 +55,16 @@ pub async fn register(pool: &PgPool, payload: RegisterPayload) -> Result<AuthRes
     return Err(AuthError::Validation("Ник уже занят.".into()));
   }
 
-  let password_hash = hash_password(&payload.password)?;
+  let normalized_payload = RegisterPayload {
+    email: normalized_email.to_string(),
+    nickname: normalized_nickname.to_string(),
+    password: payload.password,
+    repeat_password: payload.repeat_password,
+  };
 
-  let user = repository::create_user(pool, &payload, &password_hash)
+  let password_hash = hash_password(&normalized_payload.password)?;
+
+  let user = repository::create_user(pool, &normalized_payload, &password_hash)
     .await
     .map_err(|error| AuthError::Internal(error.to_string()))?;
 
@@ -267,6 +295,12 @@ fn verify_password(password: &str, stored_hash: &str) -> Result<(), AuthError> {
   Argon2::default()
     .verify_password(password.as_bytes(), &parsed_hash)
     .map_err(|error| AuthError::Internal(error.to_string()))
+}
+
+fn is_valid_registration_nickname(value: &str) -> bool {
+  value
+    .chars()
+    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn sanitize_path_component(value: &str) -> String {

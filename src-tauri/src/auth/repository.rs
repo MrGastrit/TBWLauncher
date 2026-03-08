@@ -15,6 +15,23 @@ pub async fn find_user_by_identity(pool: &PgPool, identity: &str) -> Result<Opti
   .await
 }
 
+pub async fn find_user_by_nickname_case_insensitive(
+  pool: &PgPool,
+  nickname: &str,
+) -> Result<Option<DbUser>, sqlx::Error> {
+  sqlx::query_as::<_, DbUser>(
+    r#"
+    SELECT id::text AS id, email, nickname, password_hash, skin_url, role
+    FROM users
+    WHERE lower(nickname) = lower($1)
+    LIMIT 1
+    "#,
+  )
+  .bind(nickname)
+  .fetch_optional(pool)
+  .await
+}
+
 pub async fn create_user(pool: &PgPool, payload: &RegisterPayload, password_hash: &str) -> Result<DbUser, sqlx::Error> {
   sqlx::query_as::<_, DbUser>(
     r#"

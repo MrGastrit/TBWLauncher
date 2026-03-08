@@ -1,16 +1,22 @@
-п»їimport type { LoginPayload, RegisterPayload } from '../models/auth'
+import type { LoginPayload, RegisterPayload } from '../models/auth'
+
+const nicknamePattern = /^[A-Za-z0-9_]+$/
 
 export function validateRegisterForm(payload: RegisterPayload): string | null {
   if (!payload.email || !payload.nickname || !payload.password || !payload.repeatPassword) {
-    return 'Р—Р°РїРѕР»РЅРёС‚Рµ РІСЃРµ РїРѕР»СЏ СЂРµРіРёСЃС‚СЂР°С†РёРё.'
+    return 'Заполните все поля регистрации.'
   }
 
   if (payload.password !== payload.repeatPassword) {
-    return 'РџР°СЂРѕР»Рё РЅРµ СЃРѕРІРїР°РґР°СЋС‚.'
+    return 'Пароли не совпадают.'
   }
 
   if (payload.nickname.length < 3) {
-    return 'РќРёРє РґРѕР»Р¶РµРЅ СЃРѕРґРµСЂР¶Р°С‚СЊ РјРёРЅРёРјСѓРј 3 СЃРёРјРІРѕР»Р°.'
+    return 'Ник должен содержать минимум 3 символа.'
+  }
+
+  if (!nicknamePattern.test(payload.nickname)) {
+    return 'Ник может содержать только английские буквы, цифры и нижнее подчеркивание (_).'
   }
 
   return null
@@ -18,7 +24,7 @@ export function validateRegisterForm(payload: RegisterPayload): string | null {
 
 export function validateLoginForm(payload: LoginPayload): string | null {
   if (!payload.identity || !payload.password) {
-    return 'Р—Р°РїРѕР»РЅРёС‚Рµ Р»РѕРіРёРЅ Рё РїР°СЂРѕР»СЊ.'
+    return 'Заполните логин и пароль.'
   }
 
   return null

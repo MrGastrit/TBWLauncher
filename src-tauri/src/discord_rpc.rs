@@ -10,7 +10,7 @@ const DISCORD_OP_HANDSHAKE: i32 = 0;
 const DISCORD_OP_FRAME: i32 = 1;
 const DEFAULT_APPLICATION_ID: &str = "1477724606919086232";
 const DEFAULT_LARGE_IMAGE_KEY: &str = "tbw_logo";
-const BROWSING_STATE: &str = "Просматривает лаунчер...";
+const BROWSING_STATE: &str = "Просматривает лаунчер";
 
 static DISCORD_RPC_SESSION: OnceLock<Mutex<Option<DiscordRpcSession>>> = OnceLock::new();
 

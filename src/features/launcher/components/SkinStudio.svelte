@@ -50,9 +50,48 @@
   let selectedSkinId = "";
   let selectionDispatchToken = 0;
   let lastSyncedSkinUrl = "";
+  let skipNextSkinSync = true;
+  let contextMenuSkinId: string | null = null;
+  let contextMenuX = 0;
+  let contextMenuY = 0;
+  let pendingDeleteSkinId: string | null = null;
+  let showDeleteConfirm = false;
 
   onMount(() => {
     void initializeDefaultSkins();
+
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".skin-context-menu")) {
+        return;
+      }
+
+      contextMenuSkinId = null;
+    };
+    const handleEscape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      contextMenuSkinId = null;
+      if (showDeleteConfirm) {
+        showDeleteConfirm = false;
+        pendingDeleteSkinId = null;
+      }
+    };
+    const handleWindowResize = (): void => {
+      contextMenuSkinId = null;
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleEscape);
+    window.addEventListener("resize", handleWindowResize);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("resize", handleWindowResize);
+    };
   });
 
   function getUserScopeKey(): string {
@@ -184,8 +223,8 @@
       savedSkins = mergedSkins;
       if (!selectedSkinId && mergedSkins.length > 0) {
         selectedSkinId =
-          preferredSkin?.id ??
           storedSelectedSkin?.id ??
+          preferredSkin?.id ??
           defaults[0]?.id ??
           mergedSkins[0].id;
       }
@@ -429,8 +468,76 @@
   }
 
   function selectSkin(skinId: string): void {
+    contextMenuSkinId = null;
     selectedSkinId = skinId;
     persistSelectedSkinId(skinId);
+  }
+
+  function isDefaultSkin(skin: SavedSkin): boolean {
+    return skin.id.startsWith("default-");
+  }
+
+  function openSkinContextMenu(event: MouseEvent, skin: SavedSkin): void {
+    if (isDefaultSkin(skin)) {
+      contextMenuSkinId = null;
+      return;
+    }
+
+    event.preventDefault();
+
+    const menuWidth = 160;
+    const menuHeight = 46;
+    const safeX = Math.max(
+      8,
+      Math.min(event.clientX, window.innerWidth - menuWidth - 8),
+    );
+    const safeY = Math.max(
+      8,
+      Math.min(event.clientY, window.innerHeight - menuHeight - 8),
+    );
+
+    contextMenuSkinId = skin.id;
+    contextMenuX = safeX;
+    contextMenuY = safeY;
+  }
+
+  function openDeleteConfirmFromContextMenu(): void {
+    if (!contextMenuSkinId) {
+      return;
+    }
+
+    pendingDeleteSkinId = contextMenuSkinId;
+    showDeleteConfirm = true;
+    contextMenuSkinId = null;
+  }
+
+  function cancelDeleteSkin(): void {
+    showDeleteConfirm = false;
+    pendingDeleteSkinId = null;
+  }
+
+  function confirmDeleteSkin(): void {
+    if (!pendingDeleteSkinId) {
+      return;
+    }
+
+    const deletedSkin = savedSkins.find((skin) => skin.id === pendingDeleteSkinId);
+    savedSkins = savedSkins.filter((skin) => skin.id !== pendingDeleteSkinId);
+
+    if (selectedSkinId === pendingDeleteSkinId) {
+      selectedSkinId = savedSkins[0]?.id ?? "";
+    }
+
+    if (
+      deletedSkin?.storedSkinUrl &&
+      deletedSkin.storedSkinUrl.trim() === lastSyncedSkinUrl
+    ) {
+      lastSyncedSkinUrl = "";
+    }
+
+    persistSkinsToStorage(savedSkins);
+    showDeleteConfirm = false;
+    pendingDeleteSkinId = null;
   }
 
   function getNativeFilePath(file: File): string | null {
@@ -527,7 +634,11 @@
   $: if (selectedSkin) {
     persistSkinsToStorage(savedSkins);
     persistSelectedSkinId(selectedSkin.id);
-    void syncSelectedSkinUrl(selectedSkin);
+    if (skipNextSkinSync) {
+      skipNextSkinSync = false;
+    } else {
+      void syncSelectedSkinUrl(selectedSkin);
+    }
     void emitSelectedSkinChange(selectedSkin);
   }
 </script>
@@ -563,6 +674,7 @@
           class="skin-card saved-skin-card"
           class:selected={selectedSkin?.id === skin.id}
           on:click={() => selectSkin(skin.id)}
+          on:contextmenu={(event) => openSkinContextMenu(event, skin)}
           aria-label={`Выбрать скин ${skin.name}`}
         >
           <div class="skin-card-preview">
@@ -571,7 +683,7 @@
               armType={skin.armType}
               interactive={false}
               scale={0.82}
-              initialYaw={180}
+              initialYaw={150}
             />
           </div>
           <div class="skin-card-footer">
@@ -598,7 +710,7 @@
         <SkinCharacterPreview
           skinUrl={selectedSkin.skinUrl}
           armType={selectedSkin.armType}
-          initialYaw={180}
+          initialYaw={150}
           scale={1.02}
         />
       {:else}
@@ -609,6 +721,52 @@
     <div class="skin-preview-meta">Зажми и потяни, чтобы вращать модель</div>
   </aside>
 </section>
+
+{#if contextMenuSkinId}
+  <div
+    class="skin-context-menu"
+    style={`left:${contextMenuX}px;top:${contextMenuY}px;`}
+    role="menu"
+    tabindex="-1"
+    on:pointerdown|stopPropagation
+  >
+    <button
+      type="button"
+      class="skin-context-menu-delete"
+      role="menuitem"
+      on:click={openDeleteConfirmFromContextMenu}
+    >
+      Удалить
+    </button>
+  </div>
+{/if}
+
+{#if showDeleteConfirm}
+  <div
+    class="skin-delete-modal-backdrop"
+    role="presentation"
+    on:click={cancelDeleteSkin}
+  >
+    <div
+      class="skin-delete-modal"
+      role="dialog"
+      tabindex="-1"
+      aria-modal="true"
+      aria-label="Подтверждение удаления скина"
+      on:pointerdown|stopPropagation
+    >
+      <p>Вы точно уверены, что хотите удалить скин из списка?</p>
+      <div class="skin-delete-modal-actions">
+        <button type="button" class="skin-delete-cancel" on:click={cancelDeleteSkin}
+          >Отмена</button
+        >
+        <button type="button" class="skin-delete-confirm" on:click={confirmDeleteSkin}
+          >Удалить</button
+        >
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .skin-studio {
@@ -667,6 +825,7 @@
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+    scrollbar-gutter: stable both-edges;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     justify-content: stretch;
@@ -744,7 +903,8 @@
 
   .saved-skin-card {
     display: grid;
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    align-content: start;
     gap: 10px;
     overflow: hidden;
   }
@@ -762,7 +922,8 @@
   }
 
   .skin-card-preview {
-    min-height: clamp(102px, 16vh, 136px);
+    min-height: 0;
+    aspect-ratio: 16 / 11;
     border-radius: 12px;
     overflow: hidden;
     background: radial-gradient(
@@ -849,6 +1010,114 @@
     color: var(--text-muted);
     font-size: 0.88rem;
     text-align: center;
+  }
+
+  .skin-context-menu {
+    position: fixed;
+    z-index: 40;
+    min-width: 160px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface-main);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.26);
+    padding: 6px;
+  }
+
+  .skin-context-menu-delete {
+    width: 100%;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: #ff7a7a;
+    font: inherit;
+    font-size: 0.9rem;
+    font-weight: 700;
+    text-align: left;
+    padding: 9px 10px;
+    cursor: pointer;
+    transition:
+      border-color 0.14s ease,
+      background-color 0.14s ease,
+      transform 0.14s ease;
+  }
+
+  .skin-context-menu-delete:hover {
+    border-color: color-mix(in srgb, #ff8d8d 66%, transparent);
+    background: color-mix(in srgb, #ff5d5d 16%, transparent);
+    transform: translateX(1px);
+  }
+
+  .skin-delete-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(6, 10, 16, 0.56);
+    backdrop-filter: blur(3px);
+  }
+
+  .skin-delete-modal {
+    width: min(420px, 92vw);
+    border-radius: 14px;
+    border: 1px solid var(--line);
+    background: var(--surface-main);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.32);
+    padding: 16px;
+    display: grid;
+    gap: 14px;
+  }
+
+  .skin-delete-modal p {
+    margin: 0;
+    color: var(--text-main);
+    font-size: 0.98rem;
+    line-height: 1.35;
+  }
+
+  .skin-delete-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  .skin-delete-cancel,
+  .skin-delete-confirm {
+    border-radius: 10px;
+    padding: 8px 12px;
+    font: inherit;
+    font-size: 0.88rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition:
+      transform 0.14s ease,
+      border-color 0.14s ease,
+      box-shadow 0.14s ease,
+      background-color 0.14s ease;
+  }
+
+  .skin-delete-cancel {
+    border: 1px solid var(--line);
+    background: var(--surface-alt);
+    color: var(--text-main);
+  }
+
+  .skin-delete-cancel:hover {
+    border-color: color-mix(in srgb, var(--accent) 68%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+  }
+
+  .skin-delete-confirm {
+    border: 1px solid rgba(255, 82, 82, 0.6);
+    background: color-mix(in srgb, #ff5d5d 20%, transparent);
+    color: #ff7b7b;
+  }
+
+  .skin-delete-confirm:hover {
+    border-color: rgba(255, 102, 102, 0.9);
+    box-shadow: 0 0 0 1px rgba(255, 82, 82, 0.32);
+    background: color-mix(in srgb, #ff5d5d 28%, transparent);
   }
 
   @media (max-width: 1320px) {

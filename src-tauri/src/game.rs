@@ -1,15 +1,19 @@
 use crate::{settings, AppState};
+use base64::Engine;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::Cursor;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::State;
 use uuid::Uuid;
@@ -296,6 +300,16 @@ pub async fn toggle_game_runtime(
     .map(str::trim)
     .filter(|value| !value.is_empty())
     .map(str::to_string);
+  let launch_skin_url = if launch_skin_url.is_some() {
+    launch_skin_url
+  } else {
+    resolve_user_skin_url_from_database(&state, &nickname).await
+  };
+  if let Some(source) = launch_skin_url.as_deref() {
+    eprintln!("Resolved launch skin source: {source}");
+  } else {
+    eprintln!("No launch skin source was resolved for nickname {nickname}.");
+  }
   let launch_settings = settings.clone();
   let progress_state = state.install_progress.clone();
   let task_progress_state = progress_state.clone();
@@ -348,6 +362,48 @@ pub async fn toggle_game_runtime(
     running: true,
     active_mode_name: Some(mode_name_owned),
   })
+}
+
+async fn resolve_user_skin_url_from_database(
+  state: &State<'_, AppState>,
+  nickname: &str,
+) -> Option<String> {
+  let identity = nickname.trim();
+  if identity.is_empty() {
+    return None;
+  }
+
+  match crate::auth::repository::find_user_by_identity(&state.pool, identity).await {
+    Ok(Some(user)) => normalize_user_skin_url(user.skin_url.as_deref()),
+    Ok(None) => match crate::auth::repository::find_user_by_nickname_case_insensitive(
+      &state.pool,
+      identity,
+    )
+    .await
+    {
+      Ok(Some(user)) => normalize_user_skin_url(user.skin_url.as_deref()),
+      Ok(None) => None,
+      Err(error) => {
+        eprintln!(
+          "Failed to resolve user skin URL from DB (case-insensitive) for nickname {identity}: {error}"
+        );
+        None
+      }
+    },
+    Err(error) => {
+      eprintln!(
+        "Failed to resolve user skin URL from DB for nickname {identity}: {error}"
+      );
+      None
+    }
+  }
+}
+
+fn normalize_user_skin_url(value: Option<&str>) -> Option<String> {
+  value
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
 }
 
 fn sync_running_game_state(running_game: &mut Option<RunningGame>) {
@@ -1477,23 +1533,64 @@ fn spawn_game_process(
   nickname: &str,
   selected_skin_url: Option<&str>,
 ) -> Result<u32, String> {
+  let selected_skin_source = selected_skin_url
+    .map(str::trim)
+    .filter(|value| !value.is_empty());
+  let selected_skin_path = resolve_selected_skin_file_path(plan, selected_skin_source);
+  let skin_exchange_dir = resolve_skin_exchange_dir(plan);
+  if let Some(source_skin_path) = selected_skin_path.as_deref() {
+    eprintln!(
+      "Resolved launch skin file: {}",
+      source_skin_path.display()
+    );
+  } else if let Some(source_value) = selected_skin_source {
+    eprintln!("Launch skin source did not resolve to file: {source_value}");
+  } else {
+    eprintln!("No launch skin source was provided.");
+  }
+  eprintln!(
+    "Skin exchange directory: {}",
+    skin_exchange_dir.display()
+  );
+  if let Err(error) = ensure_directory_ready(&skin_exchange_dir) {
+    eprintln!(
+      "Failed to prepare skin exchange directory {}: {error}",
+      skin_exchange_dir.display()
+    );
+  }
+  ensure_launch_paths_writable(plan)?;
+
   if let Err(error) = enforce_local_skin_only_configuration(plan) {
     eprintln!("Failed to enforce local-only skin configuration: {error}");
   }
 
-  if let Some(skin_url) = selected_skin_url {
-    if let Err(error) = sync_selected_skin_into_game(plan, nickname, skin_url) {
+  if let Some(source_skin_path) = selected_skin_path.as_deref() {
+    if let Err(error) = sync_selected_skin_into_game(plan, nickname, source_skin_path) {
       eprintln!("Failed to prepare selected skin for launch: {error}");
     }
   }
 
-  let mut launch_args = build_java_arguments(plan, settings)?;
+  let mut launch_args = build_java_arguments(
+    plan,
+    settings,
+    nickname,
+    selected_skin_source,
+    selected_skin_path.as_deref(),
+    skin_exchange_dir.as_path(),
+  )?;
   launch_args.extend(build_game_arguments(plan, nickname));
 
   #[cfg(windows)]
   if settings.show_logs {
     let mut command = Command::new("powershell.exe");
     configure_process_spawn(&mut command, true);
+    apply_selected_skin_environment(
+      &mut command,
+      selected_skin_source,
+      selected_skin_path.as_deref(),
+      nickname,
+      skin_exchange_dir.as_path(),
+    );
     command.current_dir(&plan.working_dir);
     command.arg("-NoLogo");
     command.arg("-NoExit");
@@ -1512,7 +1609,36 @@ fn spawn_game_process(
 
   let mut command = Command::new(&plan.java_executable);
   configure_process_spawn(&mut command, settings.show_logs);
+  apply_selected_skin_environment(
+    &mut command,
+    selected_skin_source,
+    selected_skin_path.as_deref(),
+    nickname,
+    skin_exchange_dir.as_path(),
+  );
   command.current_dir(&plan.working_dir);
+
+  let launch_log_path = plan.working_dir.join("logs").join("tbw-java-launch.log");
+  if !settings.show_logs {
+    ensure_directory_ready(&plan.working_dir.join("logs"))?;
+
+    let stdout_file = OpenOptions::new()
+      .create(true)
+      .append(true)
+      .open(&launch_log_path)
+      .map_err(|error| {
+        format!(
+          "Failed to open launch log file {}: {error}",
+          launch_log_path.display()
+        )
+      })?;
+    let stderr_file = stdout_file
+      .try_clone()
+      .map_err(|error| format!("Failed to clone launch log file handle: {error}"))?;
+
+    command.stdout(Stdio::from(stdout_file));
+    command.stderr(Stdio::from(stderr_file));
+  }
 
   for arg in launch_args {
     command.arg(arg);
@@ -1521,16 +1647,343 @@ fn spawn_game_process(
   let child = command
     .spawn()
     .map_err(|error| format!("Failed to start the Java process: {error}"))?;
+  let pid = child.id();
 
-  Ok(child.id())
+  if !settings.show_logs && process_exited_early(pid, Duration::from_secs(4)) {
+    let mut message = format!(
+      "The game process exited during startup. See {} for details.",
+      launch_log_path.display()
+    );
+
+    if let Some(tail) = read_text_file_tail(&launch_log_path, 60) {
+      message.push_str("\n\n=== Last launch log lines ===\n");
+      message.push_str(&tail);
+    }
+
+    return Err(message);
+  }
+
+  Ok(pid)
+}
+
+fn resolve_selected_skin_file_path(
+  plan: &LaunchPlan,
+  selected_skin_url: Option<&str>,
+) -> Option<PathBuf> {
+  let raw_value = selected_skin_url
+    .map(str::trim)
+    .filter(|value| !value.is_empty())?;
+
+  if let Some(decoded_data_url_path) = try_decode_data_url_skin(plan, raw_value) {
+    return Some(decoded_data_url_path);
+  }
+
+  let path = PathBuf::from(raw_value);
+
+  if path.is_file() {
+    return Some(path);
+  }
+
+  if let Some(recovered_path) = recover_missing_local_skin_path(plan, raw_value) {
+    eprintln!(
+      "Recovered missing selected skin file from launcher_skins: {}",
+      recovered_path.display()
+    );
+    return Some(recovered_path);
+  }
+
+  if let Some(parsed_file_path) = try_resolve_file_url_path(raw_value) {
+    if parsed_file_path.is_file() {
+      return Some(parsed_file_path);
+    }
+  }
+
+  if raw_value.starts_with("https://") || raw_value.starts_with("http://") {
+    match download_selected_skin_url(plan, raw_value) {
+      Ok(downloaded_path) => return Some(downloaded_path),
+      Err(error) => {
+        eprintln!("Failed to download selected skin from URL {raw_value}: {error}");
+      }
+    }
+  }
+
+  None
+}
+
+fn try_decode_data_url_skin(plan: &LaunchPlan, value: &str) -> Option<PathBuf> {
+  let trimmed = value.trim();
+  let lowered = trimmed.to_ascii_lowercase();
+  if !lowered.starts_with("data:image/png;base64,") {
+    return None;
+  }
+
+  let comma_index = trimmed.find(',')?;
+  let encoded = trimmed.get(comma_index + 1..)?.trim();
+  if encoded.is_empty() {
+    return None;
+  }
+
+  let decoded = base64::engine::general_purpose::STANDARD
+    .decode(encoded.as_bytes())
+    .ok()?;
+  if decoded.len() < 8 || &decoded[..8] != b"\x89PNG\r\n\x1a\n" {
+    return None;
+  }
+
+  let cache_dir = plan
+    .working_dir
+    .join("launcher_skins")
+    .join("resolved");
+  ensure_directory_ready(&cache_dir).ok()?;
+
+  let mut hasher = Sha1::new();
+  hasher.update(trimmed.as_bytes());
+  let hash = format!("{:x}", hasher.finalize());
+  let target_path = cache_dir.join(format!("selected-inline-{hash}.png"));
+
+  fs::write(&target_path, decoded).ok()?;
+  target_path.is_file().then_some(target_path)
+}
+
+fn is_inline_data_url(value: &str) -> bool {
+  value
+    .trim()
+    .to_ascii_lowercase()
+    .starts_with("data:image/png;base64,")
+}
+
+fn recover_missing_local_skin_path(plan: &LaunchPlan, raw_value: &str) -> Option<PathBuf> {
+  let launcher_skins_dir = plan.working_dir.join("launcher_skins");
+  if !launcher_skins_dir.is_dir() {
+    return None;
+  }
+
+  let raw_path = PathBuf::from(raw_value);
+  let raw_file_name = raw_path
+    .file_name()
+    .and_then(|value| value.to_str())?;
+  let uuid_prefix = extract_uuid_prefix_from_file_name(raw_file_name);
+
+  let mut candidates = Vec::<(PathBuf, std::time::SystemTime)>::new();
+  let entries = fs::read_dir(&launcher_skins_dir).ok()?;
+  for entry in entries {
+    let entry = entry.ok()?;
+    let path = entry.path();
+    if !path.is_file() {
+      continue;
+    }
+
+    let is_png = path
+      .extension()
+      .and_then(|value| value.to_str())
+      .is_some_and(|value| value.eq_ignore_ascii_case("png"));
+    if !is_png {
+      continue;
+    }
+
+    if let Some(prefix) = uuid_prefix.as_deref() {
+      let file_name = entry.file_name();
+      let file_name = file_name.to_string_lossy().to_ascii_lowercase();
+      let expected_prefix = format!("{prefix}-");
+      if !file_name.starts_with(&expected_prefix) {
+        continue;
+      }
+    }
+
+    let modified_time = entry.metadata().ok()?.modified().ok()?;
+    candidates.push((path, modified_time));
+  }
+
+  if candidates.is_empty() {
+    return None;
+  }
+
+  candidates.sort_by(|a, b| b.1.cmp(&a.1));
+  candidates.into_iter().next().map(|entry| entry.0)
+}
+
+fn extract_uuid_prefix_from_file_name(file_name: &str) -> Option<String> {
+  if file_name.len() < 36 {
+    return None;
+  }
+
+  let prefix = &file_name[..36];
+  Uuid::parse_str(prefix).ok()?;
+  Some(prefix.to_ascii_lowercase())
+}
+
+fn try_resolve_file_url_path(value: &str) -> Option<PathBuf> {
+  let stripped = value.strip_prefix("file://")?;
+  let decoded = stripped
+    .replace("%20", " ")
+    .replace("%5C", "\\")
+    .replace("%2F", "/");
+
+  #[cfg(windows)]
+  let normalized = {
+    let without_leading_slash = if decoded.starts_with('/') && decoded.as_bytes().get(2) == Some(&b':') {
+      &decoded[1..]
+    } else {
+      decoded.as_str()
+    };
+
+    without_leading_slash.replace('/', "\\")
+  };
+
+  #[cfg(not(windows))]
+  let normalized = decoded;
+
+  let path = PathBuf::from(normalized);
+  path.is_file().then_some(path)
+}
+
+fn download_selected_skin_url(plan: &LaunchPlan, url: &str) -> Result<PathBuf, String> {
+  let cache_dir = plan
+    .working_dir
+    .join("launcher_skins")
+    .join("resolved");
+  ensure_directory_ready(&cache_dir)?;
+
+  let mut hasher = Sha1::new();
+  hasher.update(url.as_bytes());
+  let hash = format!("{:x}", hasher.finalize());
+  let target_path = cache_dir.join(format!("selected-{hash}.png"));
+
+  if target_path.is_file() {
+    let _ = fs::remove_file(&target_path);
+  }
+
+  let http_client = build_http_client()?;
+  download_to_path(&http_client, url, &target_path, None, None)?;
+
+  if !target_path.is_file() {
+    return Err(format!(
+      "Downloaded skin file {} was not created.",
+      target_path.display()
+    ));
+  }
+
+  Ok(target_path)
+}
+
+fn resolve_skin_exchange_dir(plan: &LaunchPlan) -> PathBuf {
+  if let Some(configured) = std::env::var_os("TBW_SKINS_DIR")
+    .map(PathBuf::from)
+    .filter(|value| !value.as_os_str().is_empty())
+  {
+    return configured;
+  }
+
+  plan
+    .game_dir
+    .join("TBWLauncherSkins")
+    .join("skins")
+}
+
+fn apply_selected_skin_environment(
+  command: &mut Command,
+  selected_skin_source: Option<&str>,
+  selected_skin_path: Option<&Path>,
+  nickname: &str,
+  skin_exchange_dir: &Path,
+) {
+  if let Some(source) = selected_skin_source.filter(|value| !is_inline_data_url(value)) {
+    command.env("TBW_SKIN_SOURCE", source);
+  }
+
+  if let Some(path) = selected_skin_path {
+    command.env("TBW_SKIN_PATH", path);
+  }
+
+  command.env("TBW_SKINS_DIR", skin_exchange_dir);
+
+  let trimmed_nickname = nickname.trim();
+  if !trimmed_nickname.is_empty() {
+    command.env("TBW_PLAYER_NAME", trimmed_nickname);
+  }
+}
+
+fn ensure_launch_paths_writable(plan: &LaunchPlan) -> Result<(), String> {
+  let launch_paths = [
+    plan.working_dir.join("logs"),
+    plan.game_dir.join("config"),
+    plan.game_dir.join("logs"),
+  ];
+
+  for path in launch_paths {
+    if !path.exists() {
+      continue;
+    }
+
+    clear_readonly_flags_recursive(&path)?;
+  }
+
+  Ok(())
+}
+
+fn clear_readonly_flags_recursive(path: &Path) -> Result<(), String> {
+  if !path.exists() {
+    return Ok(());
+  }
+
+  let metadata = fs::metadata(path)
+    .map_err(|error| format!("Failed to read metadata for {}: {error}", path.display()))?;
+  let mut permissions = metadata.permissions();
+  if permissions.readonly() {
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions).map_err(|error| {
+      format!(
+        "Failed to remove read-only flag from {}: {error}",
+        path.display()
+      )
+    })?;
+  }
+
+  if !metadata.is_dir() {
+    return Ok(());
+  }
+
+  let entries = fs::read_dir(path)
+    .map_err(|error| format!("Failed to read directory {}: {error}", path.display()))?;
+  for entry in entries {
+    let entry = entry
+      .map_err(|error| format!("Failed to read directory entry in {}: {error}", path.display()))?;
+    clear_readonly_flags_recursive(&entry.path())?;
+  }
+
+  Ok(())
+}
+
+fn process_exited_early(pid: u32, timeout: Duration) -> bool {
+  let deadline = Instant::now() + timeout;
+  while Instant::now() < deadline {
+    if !process_is_running(pid) {
+      return true;
+    }
+
+    thread::sleep(Duration::from_millis(120));
+  }
+
+  false
+}
+
+fn read_text_file_tail(path: &Path, max_lines: usize) -> Option<String> {
+  if max_lines == 0 {
+    return Some(String::new());
+  }
+
+  let contents = fs::read_to_string(path).ok()?;
+  let mut lines = contents.lines().rev().take(max_lines).collect::<Vec<_>>();
+  lines.reverse();
+
+  Some(lines.join("\n"))
 }
 
 fn sync_selected_skin_into_game(
   plan: &LaunchPlan,
   nickname: &str,
-  selected_skin_url: &str,
+  source_skin_path: &Path,
 ) -> Result<(), String> {
-  let source_skin_path = PathBuf::from(selected_skin_url.trim());
   if !source_skin_path.is_file() {
     return Err(format!(
       "Selected skin file {} was not found.",
@@ -1551,7 +2004,7 @@ fn sync_selected_skin_into_game(
 
     for player_file_name in &player_file_names {
       let target_path = target_root.join(format!("{player_file_name}.png"));
-      fs::copy(&source_skin_path, &target_path).map_err(|error| {
+      fs::copy(source_skin_path, &target_path).map_err(|error| {
         format!(
           "Failed to copy selected skin from {} to {}: {error}",
           source_skin_path.display(),
@@ -1750,6 +2203,10 @@ fn quote_powershell_argument(value: &OsStr) -> String {
 fn build_java_arguments(
   plan: &LaunchPlan,
   settings: &settings::LauncherSettings,
+  nickname: &str,
+  selected_skin_source: Option<&str>,
+  selected_skin_path: Option<&Path>,
+  skin_exchange_dir: &Path,
 ) -> Result<Vec<OsString>, String> {
   let mut args = split_command_line(&settings.java_args)?
     .into_iter()
@@ -1791,6 +2248,26 @@ fn build_java_arguments(
     if let Some(logging_argument) = &plan.logging_argument {
       args.push(logging_argument.clone());
     }
+  }
+
+  if let Some(path) = selected_skin_path {
+    args.push(OsString::from(format!("-Dtbw.skin.path={}", path.display())));
+  }
+
+  if let Some(source) = selected_skin_source.filter(|value| !is_inline_data_url(value)) {
+    args.push(OsString::from(format!("-Dtbw.skin.source={source}")));
+  }
+
+  args.push(OsString::from(format!(
+    "-Dtbw.skins.dir={}",
+    skin_exchange_dir.display()
+  )));
+
+  let trimmed_nickname = nickname.trim();
+  if !trimmed_nickname.is_empty() {
+    args.push(OsString::from(format!(
+      "-Dtbw.player.name={trimmed_nickname}"
+    )));
   }
 
   args.push(OsString::from(&plan.main_class));
@@ -2023,7 +2500,16 @@ fn resolve_launch_plan(mode_name: &str, preferred_game_version: Option<&str>) ->
     inherited_manifest,
     &http_client,
   )?;
-  let classpath = build_classpath(&library_jars, &client_jar)?;
+  let classpath = build_classpath(
+    &library_jars,
+    &client_jar,
+    should_include_client_jar_in_classpath(
+      &version_id,
+      &main_class,
+      &jvm_argument_tokens,
+      &library_jars,
+    ),
+  )?;
   let required_java_major = required_java_major_version(client_manifest);
   let java_executable = resolve_java_executable(&tbw_root, required_java_major)?;
 
@@ -2045,12 +2531,55 @@ fn resolve_launch_plan(mode_name: &str, preferred_game_version: Option<&str>) ->
   })
 }
 
-fn build_classpath(library_jars: &[PathBuf], client_jar: &Path) -> Result<OsString, String> {
+fn build_classpath(
+  library_jars: &[PathBuf],
+  client_jar: &Path,
+  include_client_jar: bool,
+) -> Result<OsString, String> {
   let mut entries = library_jars.to_vec();
-  entries.push(client_jar.to_path_buf());
+  if include_client_jar {
+    entries.push(client_jar.to_path_buf());
+  }
 
   std::env::join_paths(entries)
     .map_err(|error| format!("Failed to build the classpath: {error}"))
+}
+
+fn should_include_client_jar_in_classpath(
+  version_id: &str,
+  main_class: &str,
+  jvm_argument_tokens: &[String],
+  library_jars: &[PathBuf],
+) -> bool {
+  if has_minecraft_srg_client_jar(library_jars) {
+    return false;
+  }
+
+  let is_forge_like = version_id.to_ascii_lowercase().contains("forge");
+  if !is_forge_like {
+    return true;
+  }
+
+  if main_class == "cpw.mods.bootstraplauncher.BootstrapLauncher" {
+    return false;
+  }
+
+  let has_ignore_list_hint = jvm_argument_tokens.iter().any(|token| {
+    let lower = token.to_ascii_lowercase();
+    lower.contains("ignorelist=") && lower.contains("${version_name}.jar")
+  });
+
+  !has_ignore_list_hint
+}
+
+fn has_minecraft_srg_client_jar(library_jars: &[PathBuf]) -> bool {
+  library_jars.iter().any(|path| {
+    let normalized = path
+      .to_string_lossy()
+      .replace('\\', "/")
+      .to_ascii_lowercase();
+    normalized.contains("/net/minecraft/client/") && normalized.ends_with("-srg.jar")
+  })
 }
 
 fn required_java_major_version(manifest: &serde_json::Value) -> u32 {
@@ -3209,6 +3738,7 @@ fn resolve_java_executable(tbw_root: &Path, required_major: u32) -> Result<OsStr
   }
 
   collect_path_java_candidates(&mut candidates);
+  collect_windows_java_install_candidates(&mut candidates);
   candidates.push(PathBuf::from("java"));
 
   let exact_major_preferred = prefers_exact_java_major(required_major);
@@ -3280,6 +3810,41 @@ fn collect_path_java_candidates(out: &mut Vec<PathBuf>) {
     }
   }
 }
+
+#[cfg(windows)]
+fn collect_windows_java_install_candidates(out: &mut Vec<PathBuf>) {
+  let mut roots = Vec::<PathBuf>::new();
+
+  for env_key in ["ProgramFiles", "ProgramFiles(x86)"] {
+    if let Some(base_dir) = std::env::var_os(env_key).map(PathBuf::from) {
+      roots.push(base_dir.join("Java"));
+      roots.push(base_dir.join("Eclipse Adoptium"));
+      roots.push(base_dir.join("Microsoft"));
+      roots.push(base_dir.join("Zulu"));
+      roots.push(base_dir.join("BellSoft"));
+    }
+  }
+
+  for root in roots {
+    if !root.is_dir() {
+      continue;
+    }
+
+    let Ok(entries) = fs::read_dir(&root) else {
+      continue;
+    };
+
+    for entry in entries.flatten() {
+      let java_candidate = entry.path().join("bin").join("java.exe");
+      if java_candidate.is_file() {
+        out.push(java_candidate);
+      }
+    }
+  }
+}
+
+#[cfg(not(windows))]
+fn collect_windows_java_install_candidates(_: &mut Vec<PathBuf>) {}
 
 fn collect_named_files(
   dir: &Path,
@@ -3477,10 +4042,7 @@ fn configure_process_spawn(command: &mut Command, show_logs: bool) {
   }
 
   if !show_logs {
-    command
-      .stdin(Stdio::null())
-      .stdout(Stdio::null())
-      .stderr(Stdio::null());
+    command.stdin(Stdio::null());
   }
 }
 

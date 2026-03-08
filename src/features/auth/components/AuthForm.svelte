@@ -217,6 +217,8 @@
               autocomplete="username"
               minlength="3"
               maxlength="24"
+              pattern="[A-Za-z0-9_]+"
+              title="Только английские буквы, цифры и нижнее подчеркивание (_)."
             />
 
             <PasswordField

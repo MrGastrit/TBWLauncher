@@ -458,6 +458,7 @@
       uploadedSkinUrl?: string;
     }>,
   ): void {
+    const nextPreviewUrl = event.detail.previewUrl?.trim();
     const nextUploadedSkinUrl = event.detail.uploadedSkinUrl?.trim();
     if (nextUploadedSkinUrl) {
       selectedSkinUrl = nextUploadedSkinUrl;
@@ -465,6 +466,8 @@
         ...user,
         skinUrl: nextUploadedSkinUrl,
       };
+    } else if (nextPreviewUrl) {
+      selectedSkinUrl = nextPreviewUrl;
     }
 
     const nextFacePreviewUrl = event.detail.facePreviewUrl?.trim();
@@ -474,7 +477,6 @@
       return;
     }
 
-    const nextPreviewUrl = event.detail.previewUrl?.trim();
     if (!nextPreviewUrl) {
       return;
     }
@@ -687,6 +689,8 @@
 
     const build = builds.find((item) => item.name === modeName);
     const isStoppingCurrentMode = runningModeName === modeName;
+    const launchSkinUrl =
+      selectedSkinUrl.trim() || user.skinUrl?.trim() || undefined;
     launchInFlight = true;
 
     if (isStoppingCurrentMode) {
@@ -702,7 +706,7 @@
         modeName,
         user.nickname,
         build?.gameVersion,
-        selectedSkinUrl || undefined,
+        launchSkinUrl,
       );
 
       runningModeName = runtimeState.activeModeName;
