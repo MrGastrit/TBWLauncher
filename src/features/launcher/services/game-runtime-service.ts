@@ -87,6 +87,10 @@ export async function getInstallProgressState(): Promise<BuildInstallProgressSta
   return getInvoke()<BuildInstallProgressState | null>('get_install_progress_state')
 }
 
+export async function cancelActiveDownloads(): Promise<void> {
+  await getInvoke()<null>('cancel_active_downloads')
+}
+
 export async function updateDiscordPresence(
   activeModeName: string | null,
   nickname: string,

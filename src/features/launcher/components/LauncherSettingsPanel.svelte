@@ -10,10 +10,14 @@
   export let theme: "dark" | "light" = "dark";
   export let onBack: () => void;
   export let onThemeChange: (theme: "dark" | "light") => void;
+  export let onSaved: ((settings: LauncherSettings) => void) | null = null;
+  export let onCheckUpdates: (() => void) | null = null;
+  export let updateCheckInFlight = false;
 
   let totalRamMb = 8192;
   let ramMb = 2048;
   let javaArgs = "-XX:+UseG1GC -XX:+UnlockExperimentalVMOptions";
+  let autoUpdates = true;
   let closeOnLaunch = false;
   let showLogs = true;
   let infoMessage = "";
@@ -41,6 +45,7 @@
       ramMb = clampRamToStep(stored.ramMb);
       theme = stored.theme;
       javaArgs = stored.javaArgs;
+      autoUpdates = stored.autoUpdates ?? true;
       closeOnLaunch = stored.closeOnLaunch;
       showLogs = stored.showLogs;
       onThemeChange(theme);
@@ -57,12 +62,14 @@
       ramMb: clampRamToStep(ramMb),
       theme,
       javaArgs,
+      autoUpdates,
       closeOnLaunch,
       showLogs,
     };
 
     try {
       await saveLauncherSettings(payload);
+      onSaved?.(payload);
       infoMessage = "Настройки сохранены.";
       onThemeChange(theme);
       if (closeTimerId) {
@@ -135,6 +142,10 @@
 
   <div class="checks">
     <label
+      ><input type="checkbox" bind:checked={autoUpdates} /> Автообновление
+      лаунчера</label
+    >
+    <label
       ><input type="checkbox" bind:checked={closeOnLaunch} /> Закрывать лаунчер после
       запуска игры</label
     >
@@ -148,9 +159,22 @@
     <p class="success">{infoMessage}</p>
   {/if}
 
-  <button type="button" class="save" on:click={saveSettings}
-    >Сохранить параметры</button
-  >
+  <div class="actions">
+    {#if onCheckUpdates}
+      <button
+        type="button"
+        class="secondary"
+        on:click={onCheckUpdates}
+        disabled={updateCheckInFlight}
+      >
+        {updateCheckInFlight ? "Проверка..." : "Проверить обновления"}
+      </button>
+    {/if}
+
+    <button type="button" class="save" on:click={saveSettings}
+      >Сохранить параметры</button
+    >
+  </div>
 </section>
 
 <style>
@@ -299,7 +323,6 @@
   }
 
   .save {
-    justify-self: start;
     border-radius: 12px;
     border: none;
     padding: 11px 16px;
@@ -318,5 +341,38 @@
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(70, 182, 171, 0.3);
     filter: brightness(1.05);
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .secondary {
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    padding: 11px 16px;
+    font: inherit;
+    font-weight: 600;
+    color: var(--text-main);
+    background: var(--surface-alt);
+    cursor: pointer;
+    transition:
+      transform 0.14s ease,
+      box-shadow 0.14s ease,
+      border-color 0.14s ease;
+  }
+
+  .secondary:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: var(--accent);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.18);
+  }
+
+  .secondary:disabled {
+    opacity: 0.65;
+    cursor: default;
   }
 </style>

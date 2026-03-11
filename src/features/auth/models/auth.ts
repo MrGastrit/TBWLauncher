@@ -1,4 +1,4 @@
-﻿export type UserRole = 'user' | 'admin'
+export type UserRole = 'user' | 'admin' | 'tech' | 'vip' | (string & {})
 
 export type AuthUser = {
   id: string
@@ -33,6 +33,18 @@ export type UpdateAccountPayload = {
 export type ChangePasswordPayload = {
   currentPassword: string
   nextPassword: string
+}
+
+export type AccountChangeStatus = {
+  role: string
+  nicknameChangeDate?: string
+  passwordChangeDate?: string
+  nicknameCooldownDays: number
+  passwordCooldownDays: number
+  nicknameRemainingSeconds: number
+  passwordRemainingSeconds: number
+  canChangeNickname: boolean
+  canChangePassword: boolean
 }
 
 export type AuthResult = {

@@ -1,20 +1,18 @@
-﻿use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug)]
 pub enum AuthError {
-  Validation(String),
-  NotImplemented(&'static str),
-  Internal(String),
+    Validation(String),
+    Internal(String),
 }
 
 impl Display for AuthError {
-  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    match self {
-      Self::Validation(message) => write!(f, "{message}"),
-      Self::NotImplemented(message) => write!(f, "{message}"),
-      Self::Internal(message) => write!(f, "{message}"),
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Validation(message) => write!(f, "{message}"),
+            Self::Internal(message) => write!(f, "{message}"),
+        }
     }
-  }
 }
 
 impl std::error::Error for AuthError {}

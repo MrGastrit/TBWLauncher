@@ -7,6 +7,14 @@
   import AccountSettingsPanel from "../components/AccountSettingsPanel.svelte";
   import LauncherSettingsPanel from "../components/LauncherSettingsPanel.svelte";
   import {
+    checkLauncherUpdate as checkLauncherUpdateCommand,
+    downloadAndInstallLauncherUpdate as downloadAndInstallLauncherUpdateCommand,
+    restartLauncher as restartLauncherCommand,
+    type LauncherUpdateDownloadProgress,
+    type LauncherUpdateHandle,
+  } from "../services/launcher-updater-service";
+  import {
+    cancelActiveDownloads as cancelActiveDownloadsCommand,
     type BuildInstallProgressState,
     type BuildInstallationState,
     getBuildInstallationStates as getBuildInstallationStatesCommand,
@@ -23,6 +31,14 @@
     playPanelOpenSound,
     playSwitchSound,
   } from "../services/ui-sound";
+  import {
+    changePassword,
+    getAccountChangeStatus,
+    updateAccount,
+    updateStoredSessionNickname,
+  } from "../../auth/services/auth-service";
+  import type { AccountChangeStatus } from "../../auth/models/auth";
+  import { loadLauncherSettings as loadLauncherSettingsCommand } from "../services/launcher-settings-service";
 
   type SessionUser = {
     id: string;
@@ -56,12 +72,21 @@
     buildId: string;
   };
 
+  type AccountSavePayload = {
+    nickname: string;
+    currentPassword: string;
+    nextPassword: string;
+  };
+
   export let user: SessionUser;
   const dispatch = createEventDispatcher<{ signOut: void }>();
 
   const themeStorageKey = "tbwlauncher-theme";
   const recentModesStorageKey = "tbwlauncher-recent-modes";
   const skinPreviewStorageKey = "tbwlauncher-skin-preview";
+  const accountStatusRequestTimeoutMs = 8000;
+  const downloadCancelledErrorCode = "TBW_OPERATION_CANCELLED";
+  const updateCheckDebounceMs = 1800;
 
   let activeTab: MainTab = "home";
   let viewMode: ViewMode = "home";
@@ -74,6 +99,7 @@
   let openModeRequestIdCounter = 0;
   let launcherRootElement: HTMLElement;
   let launchInFlight = false;
+  let launchCancelRequested = false;
   let launchPendingModeName: string | null = null;
   let showLaunchProgress = false;
   let launchProgress = 0;
@@ -87,6 +113,22 @@
   let discordPresenceReady = false;
   let lastDiscordPresenceModeName: string | null | undefined = undefined;
   let lastDiscordPresenceNickname: string | undefined = undefined;
+  let accountChangeStatus: AccountChangeStatus | null = null;
+  let accountChangeStatusLoading = false;
+  let accountChangeStatusRequestId = 0;
+  let updateCheckInFlight = false;
+  let updateInstallInFlight = false;
+  let showLauncherUpdatePrompt = false;
+  let launcherUpdateBody = "";
+  let launcherUpdateVersion = "";
+  let launcherCurrentVersion = "";
+  let launcherUpdateError = "";
+  let launcherUpdateDownloadedBytes = 0;
+  let launcherUpdateTotalBytes: number | null = null;
+  let launcherUpdatePercent: number | null = null;
+  let launcherAutoUpdatesEnabled = true;
+  let launcherUpdateHandle: LauncherUpdateHandle | null = null;
+  let scheduledAutoUpdateCheckTimer: ReturnType<typeof setTimeout> | null = null;
 
   let recentModes: string[] = [];
 
@@ -304,6 +346,7 @@
     lastDiscordPresenceModeName = runningModeName;
     lastDiscordPresenceNickname = currentNickname;
     void syncDiscordPresence(runningModeName, currentNickname);
+    void initializeLauncherAutoUpdateState();
 
     const detachHoverSounds = launcherRootElement
       ? attachHoverSounds(launcherRootElement)
@@ -335,12 +378,215 @@
 
       detachHoverSounds();
       clearLaunchProgressTimers();
+      if (scheduledAutoUpdateCheckTimer) {
+        clearTimeout(scheduledAutoUpdateCheckTimer);
+        scheduledAutoUpdateCheckTimer = null;
+      }
     };
   });
+
+  function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        reject(new Error(errorMessage));
+      }, timeoutMs);
+
+      promise.then(
+        (value) => {
+          clearTimeout(timeoutHandle);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timeoutHandle);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  function formatCompactBytes(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes < 0) {
+      return "0 B";
+    }
+
+    if (bytes >= 1024 * 1024 * 1024) {
+      return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    }
+
+    if (bytes >= 1024 * 1024) {
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    if (bytes >= 1024) {
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+
+    return `${Math.round(bytes)} B`;
+  }
+
+  function formatUpdaterError(error: unknown): string {
+    const fallback = "Не удалось установить обновление лаунчера.";
+
+    if (typeof error === "string" && error.trim()) {
+      return error.trim();
+    }
+
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim();
+    }
+
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== "{}") {
+        return serialized;
+      }
+    } catch {}
+
+    return fallback;
+  }
+
+  function resetLauncherUpdateProgress(): void {
+    launcherUpdateDownloadedBytes = 0;
+    launcherUpdateTotalBytes = null;
+    launcherUpdatePercent = null;
+  }
+
+  function handleLauncherUpdaterProgress(progress: LauncherUpdateDownloadProgress): void {
+    launcherUpdateDownloadedBytes = progress.downloadedBytes;
+    launcherUpdateTotalBytes = progress.totalBytes;
+    launcherUpdatePercent = progress.percent;
+  }
+
+  async function initializeLauncherAutoUpdateState(): Promise<void> {
+    try {
+      const settings = await loadLauncherSettingsCommand();
+      launcherAutoUpdatesEnabled = settings.autoUpdates ?? true;
+    } catch {
+      launcherAutoUpdatesEnabled = true;
+    }
+
+    if (!launcherAutoUpdatesEnabled) {
+      return;
+    }
+
+    if (scheduledAutoUpdateCheckTimer) {
+      clearTimeout(scheduledAutoUpdateCheckTimer);
+    }
+
+    scheduledAutoUpdateCheckTimer = setTimeout(() => {
+      scheduledAutoUpdateCheckTimer = null;
+      void checkLauncherUpdates(false);
+    }, updateCheckDebounceMs);
+  }
+
+  async function checkLauncherUpdates(forceCheck: boolean): Promise<void> {
+    if (updateCheckInFlight || updateInstallInFlight) {
+      return;
+    }
+
+    if (!forceCheck && !launcherAutoUpdatesEnabled) {
+      return;
+    }
+
+    updateCheckInFlight = true;
+    launcherUpdateError = "";
+
+    try {
+      const update = await checkLauncherUpdateCommand();
+      if (!update) {
+        if (forceCheck && typeof window !== "undefined") {
+          window.alert("Обновлений лаунчера не найдено.");
+        }
+        return;
+      }
+
+      launcherUpdateHandle = update;
+      launcherCurrentVersion = update.currentVersion;
+      launcherUpdateVersion = update.version;
+      launcherUpdateBody = update.body?.trim() ?? "";
+      showLauncherUpdatePrompt = true;
+      resetLauncherUpdateProgress();
+    } catch (error) {
+      console.error("Launcher update check failed:", error);
+      const message = formatUpdaterError(error);
+      launcherUpdateError = message;
+      if (forceCheck && typeof window !== "undefined") {
+        window.alert(message);
+      }
+    } finally {
+      updateCheckInFlight = false;
+    }
+  }
+
+  function dismissLauncherUpdatePrompt(): void {
+    if (updateInstallInFlight) {
+      return;
+    }
+
+    showLauncherUpdatePrompt = false;
+    launcherUpdateError = "";
+  }
+
+  async function installLauncherUpdate(): Promise<void> {
+    if (!launcherUpdateHandle || updateInstallInFlight) {
+      return;
+    }
+
+    updateInstallInFlight = true;
+    launcherUpdateError = "";
+    resetLauncherUpdateProgress();
+
+    try {
+      await downloadAndInstallLauncherUpdateCommand(
+        launcherUpdateHandle,
+        handleLauncherUpdaterProgress,
+      );
+      await restartLauncherCommand();
+    } catch (error) {
+      console.error("Launcher update install failed:", error);
+      launcherUpdateError = formatUpdaterError(error);
+    } finally {
+      updateInstallInFlight = false;
+    }
+  }
+
+  function requestManualLauncherUpdateCheck(): void {
+    void checkLauncherUpdates(true);
+  }
+
+  async function refreshAccountChangeStatus(): Promise<void> {
+    const requestId = ++accountChangeStatusRequestId;
+    accountChangeStatusLoading = true;
+    try {
+      const status = await withTimeout(
+        getAccountChangeStatus(user.id, user.emailOrLogin),
+        accountStatusRequestTimeoutMs,
+        "Истекло время ожидания статуса смены аккаунта.",
+      );
+
+      if (requestId !== accountChangeStatusRequestId) {
+        return;
+      }
+
+      accountChangeStatus = status;
+    } catch (error) {
+      if (requestId !== accountChangeStatusRequestId) {
+        return;
+      }
+
+      console.error("Failed to load account change status:", error);
+      accountChangeStatus = null;
+    } finally {
+      if (requestId === accountChangeStatusRequestId) {
+        accountChangeStatusLoading = false;
+      }
+    }
+  }
 
   function openAccountSettings(): void {
     void (viewMode === "home" ? playPanelOpenSound() : playSwitchSound());
     viewMode = "account";
+    void refreshAccountChangeStatus();
   }
 
   function openLauncherSettings(): void {
@@ -370,15 +616,75 @@
     localStorage.setItem(themeStorageKey, nextTheme);
   }
 
-  function saveNickname(nextNickname: string): void {
-    user = {
-      ...user,
-      nickname: nextNickname,
-    };
-
-    if (discordPresenceReady) {
-      void syncDiscordPresence(runningModeName, nextNickname.trim());
+  function handleLauncherSettingsSaved(settings: { autoUpdates: boolean }): void {
+    launcherAutoUpdatesEnabled = settings.autoUpdates;
+    if (launcherAutoUpdatesEnabled && !showLauncherUpdatePrompt) {
+      void checkLauncherUpdates(false);
     }
+  }
+
+  async function saveAccountSettings(payload: AccountSavePayload): Promise<string> {
+    const requestedNickname = payload.nickname.trim();
+    const currentPassword = payload.currentPassword;
+    const nextPassword = payload.nextPassword;
+
+    const hasNicknameChange = requestedNickname !== user.nickname.trim();
+    const hasPasswordChange = Boolean(currentPassword || nextPassword);
+
+    if (!hasNicknameChange && !hasPasswordChange) {
+      throw new Error("Нет изменений для сохранения.");
+    }
+
+    if (hasPasswordChange) {
+      if (!currentPassword || !nextPassword) {
+        throw new Error("Для смены пароля заполните поля текущего и нового пароля.");
+      }
+
+      await changePassword(
+        {
+          currentPassword,
+          nextPassword,
+        },
+        user.id,
+        user.emailOrLogin,
+      );
+    }
+
+    if (hasNicknameChange) {
+      if (!requestedNickname) {
+        throw new Error("Ник не может быть пустым.");
+      }
+
+      await updateAccount(
+        {
+          nickname: requestedNickname,
+        },
+        user.id,
+        user.emailOrLogin,
+      );
+
+      user = {
+        ...user,
+        nickname: requestedNickname,
+      };
+      updateStoredSessionNickname(requestedNickname);
+
+      if (discordPresenceReady) {
+        void syncDiscordPresence(runningModeName, requestedNickname);
+      }
+    }
+
+    await refreshAccountChangeStatus();
+
+    if (hasNicknameChange && hasPasswordChange) {
+      return "Ник и пароль успешно обновлены.";
+    }
+
+    if (hasNicknameChange) {
+      return "Ник успешно обновлён.";
+    }
+
+    return "Пароль успешно обновлён.";
   }
 
   function applyTheme(nextTheme: ThemeMode): void {
@@ -515,6 +821,25 @@
     return "Не удалось запустить игру.";
   }
 
+  function isCancelledOperationError(error: unknown): boolean {
+    if (typeof error === "string") {
+      return error.includes(downloadCancelledErrorCode);
+    }
+
+    if (error && typeof error === "object") {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === "string" && message.includes(downloadCancelledErrorCode)) {
+        return true;
+      }
+    }
+
+    try {
+      return JSON.stringify(error).includes(downloadCancelledErrorCode);
+    } catch {
+      return false;
+    }
+  }
+
   async function syncDiscordPresence(
     activeModeName: string | null,
     nickname: string,
@@ -588,11 +913,13 @@
     showLaunchProgress = false;
     launchProgress = 0;
     launchStatusText = "";
+    launchCancelRequested = false;
     launchPendingModeName = null;
   }
 
   function beginBusyProgress(modeName: string, statusText: string): void {
     clearLaunchProgressTimers();
+    launchCancelRequested = false;
     launchPendingModeName = modeName;
     showLaunchProgress = true;
     launchProgress = 6;
@@ -617,6 +944,22 @@
     }
   }
 
+  async function cancelActiveDownload(): Promise<void> {
+    if (!launchInFlight || !showLaunchProgress || launchCancelRequested) {
+      return;
+    }
+
+    launchCancelRequested = true;
+    launchStatusText = "Отмена загрузки...";
+
+    try {
+      await cancelActiveDownloadsCommand();
+    } catch (error) {
+      launchCancelRequested = false;
+      console.error("Failed to cancel active download:", error);
+    }
+  }
+
   function applyInstallProgressState(
     progressState: BuildInstallProgressState,
   ): void {
@@ -634,11 +977,13 @@
 
   function completeBusyProgress(finalText: string): void {
     if (!showLaunchProgress) {
+      launchCancelRequested = false;
       launchPendingModeName = null;
       return;
     }
 
     clearLaunchProgressTimers();
+    launchCancelRequested = false;
     launchProgress = 100;
     launchStatusText = finalText;
     launchProgressHideTimer = setTimeout(() => {
@@ -724,12 +1069,16 @@
     } catch (error) {
       console.error("Game launch failed:", error);
       stopLaunchProgress();
+      if (isCancelledOperationError(error)) {
+        return;
+      }
       const message = formatLaunchError(error);
 
       if (typeof window !== "undefined") {
         window.alert(message);
       }
     } finally {
+      launchCancelRequested = false;
       launchInFlight = false;
     }
   }
@@ -759,12 +1108,16 @@
     } catch (error) {
       console.error("Build install failed:", error);
       stopLaunchProgress();
+      if (isCancelledOperationError(error)) {
+        return;
+      }
       const message = formatLaunchError(error);
 
       if (typeof window !== "undefined") {
         window.alert(message);
       }
     } finally {
+      launchCancelRequested = false;
       launchInFlight = false;
     }
   }
@@ -909,6 +1262,18 @@
               ></div>
             </div>
             <div class="launch-progress-percent">{launchProgress}%</div>
+            {#if launchInFlight && launchProgress < 100}
+              <div class="launch-progress-actions">
+                <button
+                  type="button"
+                  class="launch-progress-cancel"
+                  disabled={launchCancelRequested}
+                  on:click={cancelActiveDownload}
+                >
+                  {launchCancelRequested ? "Отмена..." : "Отменить загрузку"}
+                </button>
+              </div>
+            {/if}
           </div>
         </div>
       {/if}
@@ -1039,16 +1404,87 @@
           <AccountSettingsPanel
             account={user}
             onBack={returnHome}
-            onNicknameSave={saveNickname}
+            onSave={saveAccountSettings}
+            changeStatus={accountChangeStatus}
+            statusLoading={accountChangeStatusLoading}
           />
         {:else}
           <LauncherSettingsPanel
             {theme}
             onBack={returnHome}
             onThemeChange={updateTheme}
+            onSaved={handleLauncherSettingsSaved}
+            onCheckUpdates={requestManualLauncherUpdateCheck}
+            updateCheckInFlight={updateCheckInFlight}
           />
         {/if}
       </section>
+    </div>
+  {/if}
+
+  {#if showLauncherUpdatePrompt}
+    <div
+      class="confirm-backdrop"
+      role="presentation"
+      in:fade={{ duration: 120 }}
+      out:fade={{ duration: 100 }}
+    >
+      <div
+        class="confirm-panel update-confirm-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Доступно обновление лаунчера"
+        in:fly={{ y: 20, duration: 180, easing: cubicOut }}
+        out:fade={{ duration: 120 }}
+      >
+        <p class="update-confirm-title">Доступно обновление лаунчера</p>
+        <p>Текущая версия: {launcherCurrentVersion || "неизвестно"}</p>
+        <p>Новая версия: {launcherUpdateVersion}</p>
+
+        {#if launcherUpdateBody}
+          <pre class="update-notes">{launcherUpdateBody}</pre>
+        {/if}
+
+        {#if updateInstallInFlight}
+          <p class="update-progress">
+            {#if launcherUpdatePercent !== null}
+              Установка обновления... {launcherUpdatePercent}% ({formatCompactBytes(
+                launcherUpdateDownloadedBytes,
+              )}
+              {#if launcherUpdateTotalBytes !== null}
+                / {formatCompactBytes(launcherUpdateTotalBytes)}
+              {/if})
+            {:else}
+              Установка обновления... {formatCompactBytes(
+                launcherUpdateDownloadedBytes,
+              )}
+            {/if}
+          </p>
+        {/if}
+
+        {#if launcherUpdateError}
+          <p class="update-error">{launcherUpdateError}</p>
+        {/if}
+
+        <div class="confirm-actions">
+          <button
+            type="button"
+            class="confirm-cancel"
+            on:click={dismissLauncherUpdatePrompt}
+            disabled={updateInstallInFlight}
+          >
+            Позже
+          </button>
+          <button
+            type="button"
+            class="confirm-submit"
+            on:click={installLauncherUpdate}
+            disabled={updateInstallInFlight}
+          >
+            {updateInstallInFlight ? "Установка..." : "Обновить сейчас"}
+          </button>
+        </div>
+      </div>
     </div>
   {/if}
 
@@ -1308,6 +1744,36 @@
     font-size: 0.78rem;
     font-weight: 700;
     color: var(--text-muted);
+  }
+
+  .launch-progress-actions {
+    margin-top: 12px;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .launch-progress-cancel {
+    border: 1px solid rgba(255, 130, 130, 0.55);
+    background: rgba(255, 90, 90, 0.15);
+    color: #ffd7d7;
+    border-radius: 10px;
+    padding: 8px 12px;
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
+  }
+
+  .launch-progress-cancel:hover:not(:disabled) {
+    background: rgba(255, 90, 90, 0.22);
+    border-color: rgba(255, 140, 140, 0.75);
+    transform: translateY(-1px);
+  }
+
+  .launch-progress-cancel:disabled {
+    opacity: 0.72;
+    cursor: default;
   }
 
   .launcher-head {
@@ -1633,6 +2099,10 @@
     animation: signout-pop-in 0.22s ease-out;
   }
 
+  .update-confirm-panel {
+    width: min(560px, 94vw);
+  }
+
   @keyframes signout-pop-in {
     from {
       opacity: 0;
@@ -1648,6 +2118,37 @@
     margin: 0;
     color: var(--text-main);
     font-size: 1rem;
+  }
+
+  .update-confirm-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+  }
+
+  .update-notes {
+    margin: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--surface-alt) 86%, #081120 14%);
+    color: var(--text-soft);
+    font: inherit;
+    font-size: 0.88rem;
+    line-height: 1.45;
+    padding: 10px;
+    max-height: 150px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .update-progress {
+    color: var(--text-soft);
+    font-size: 0.92rem;
+  }
+
+  .update-error {
+    color: #ff8f8f;
+    font-size: 0.9rem;
   }
 
   .confirm-actions {
@@ -1692,6 +2193,14 @@
     box-shadow: 0 0 0 1px rgba(255, 82, 82, 0.32);
     background: rgba(255, 56, 56, 0.24);
     transform: translateY(-1px);
+  }
+
+  .confirm-cancel:disabled,
+  .confirm-submit:disabled {
+    opacity: 0.65;
+    cursor: default;
+    transform: none;
+    box-shadow: none;
   }
 
   @media (max-width: 700px) {

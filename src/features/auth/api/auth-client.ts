@@ -1,4 +1,5 @@
-﻿import type {
+import type {
+  AccountChangeStatus,
   AuthResult,
   ChangePasswordPayload,
   LoginPayload,
@@ -42,12 +43,38 @@ export async function loginRequest(payload: LoginPayload): Promise<AuthResult> {
   return getInvoke()<AuthResult>('login', { payload })
 }
 
-export async function updateAccountRequest(payload: UpdateAccountPayload): Promise<void> {
-  await getInvoke()<void>('update_account', { payload })
+export async function updateAccountRequest(
+  payload: UpdateAccountPayload,
+  userId?: string | null,
+  identity?: string,
+): Promise<void> {
+  await getInvoke()<void>('update_account', {
+    userId: userId?.trim() || undefined,
+    identity: identity?.trim() || undefined,
+    payload,
+  })
 }
 
-export async function changePasswordRequest(payload: ChangePasswordPayload): Promise<void> {
-  await getInvoke()<void>('change_password', { payload })
+export async function changePasswordRequest(
+  payload: ChangePasswordPayload,
+  userId?: string | null,
+  identity?: string,
+): Promise<void> {
+  await getInvoke()<void>('change_password', {
+    userId: userId?.trim() || undefined,
+    identity: identity?.trim() || undefined,
+    payload,
+  })
+}
+
+export async function getAccountChangeStatusRequest(
+  userId?: string | null,
+  identity?: string,
+): Promise<AccountChangeStatus> {
+  return getInvoke()<AccountChangeStatus>('get_account_change_status', {
+    userId: userId?.trim() || undefined,
+    identity: identity?.trim() || undefined,
+  })
 }
 
 export async function uploadSkinRequest(

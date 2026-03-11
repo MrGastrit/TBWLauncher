@@ -5,6 +5,7 @@
 
 import {
   changePasswordRequest,
+  getAccountChangeStatusRequest,
   loginRequest,
   registerRequest,
   setSkinUrlRequest,
@@ -13,6 +14,7 @@ import {
   uploadSkinRequest
 } from '../api/auth-client'
 import type {
+  AccountChangeStatus,
   AuthResult,
   ChangePasswordPayload,
   LoginPayload,
@@ -35,12 +37,27 @@ export async function register(payload: RegisterPayload): Promise<AuthResult> {
   return result
 }
 
-export async function updateAccount(payload: UpdateAccountPayload): Promise<void> {
-  await updateAccountRequest(payload)
+export async function updateAccount(
+  payload: UpdateAccountPayload,
+  userId?: string | null,
+  identity?: string,
+): Promise<void> {
+  await updateAccountRequest(payload, userId, identity)
 }
 
-export async function changePassword(payload: ChangePasswordPayload): Promise<void> {
-  await changePasswordRequest(payload)
+export async function changePassword(
+  payload: ChangePasswordPayload,
+  userId?: string | null,
+  identity?: string,
+): Promise<void> {
+  await changePasswordRequest(payload, userId, identity)
+}
+
+export async function getAccountChangeStatus(
+  userId?: string | null,
+  identity?: string,
+): Promise<AccountChangeStatus> {
+  return getAccountChangeStatusRequest(userId, identity)
 }
 
 export async function uploadSkin(
@@ -119,6 +136,26 @@ export function updateStoredSessionSkinUrl(skinUrl: string): void {
     user: {
       ...session.user,
       skinUrl: normalized
+    }
+  })
+}
+
+export function updateStoredSessionNickname(nickname: string): void {
+  const session = restoreSession()
+  if (!session) {
+    return
+  }
+
+  const normalized = nickname.trim()
+  if (!normalized) {
+    return
+  }
+
+  persistSession({
+    ...session,
+    user: {
+      ...session.user,
+      nickname: normalized
     }
   })
 }
