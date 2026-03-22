@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "tbwlauncher",
-  "version": "0.1.0",
+  "version": "1.1.1",
   "identifier": "com.govno.tbwlauncher",
   "build": {
     "frontendDist": "../dist",
@@ -47,8 +47,9 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERCQThCQzRCOTRBQTI2OUUKUldTZUpxcVVTN3lvMjhqcmU5Q2Y5ck82OUVQcG9VWmp4RkNVZmFDQTRYaG5IWEd3NTBKY3REb1EK",
       "endpoints": [
-        "https://vm863690.hosted-by.u1host.com/updates/latest.json"
+        "http://144.31.73.2/updates/latest.json"
       ],
+      "dangerousInsecureTransportProtocol": true,
       "windows": {
         "installMode": "passive"
       }

@@ -9,6 +9,7 @@
     nickname: string
     emailOrLogin: string
     skinUrl?: string
+    role: string
   }
 
   let isAuthenticated = false
@@ -16,7 +17,8 @@
     id: '',
     nickname: 'Player',
     emailOrLogin: '',
-    skinUrl: ''
+    skinUrl: '',
+    role: 'user',
   }
 
   onMount(() => {
@@ -36,7 +38,8 @@
       id: restoredSession.user.id,
       nickname: restoredSession.user.nickname,
       emailOrLogin: restoredSession.user.email,
-      skinUrl: restoredSession.user.skinUrl
+      skinUrl: restoredSession.user.skinUrl,
+      role: restoredSession.user.role || 'user',
     }
     isAuthenticated = true
 
@@ -57,7 +60,8 @@
       id: '',
       nickname: 'Player',
       emailOrLogin: '',
-      skinUrl: ''
+      skinUrl: '',
+      role: 'user',
     }
   }
 </script>

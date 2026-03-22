@@ -1,6 +1,6 @@
 param(
   [string]$OutputDir = "release/updates",
-  [string]$BaseUrl = "https://vm863690.hosted-by.u1host.com/updates",
+  [string]$BaseUrl = "http://144.31.73.2/updates",
   [string]$PlatformKey = "windows-x86_64",
   [string]$Notes = "TBW Launcher update",
   [string]$ArtifactPath = "",
@@ -18,6 +18,9 @@ $tauriDir = Join-Path $repoRoot "src-tauri"
 $tauriConfigPath = Join-Path $tauriDir "tauri.conf.json"
 $bundleDir = Join-Path $tauriDir "target\release\bundle"
 $resolvedOutputDir = (Resolve-Path (New-Item -ItemType Directory -Force -Path $OutputDir)).Path
+
+# Keep release output deterministic: upload only the latest generated updater files.
+Get-ChildItem -Path $resolvedOutputDir -File -ErrorAction SilentlyContinue | Remove-Item -Force
 
 $tauriConfig = Get-Content -Path $tauriConfigPath -Raw | ConvertFrom-Json
 $version = "$($tauriConfig.version)".Trim()

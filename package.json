@@ -12,7 +12,8 @@
     "updater:apply-pubkey": "powershell -ExecutionPolicy Bypass -File scripts/apply-updater-pubkey.ps1",
     "updater:prepare-release": "powershell -ExecutionPolicy Bypass -File scripts/prepare-updater-release.ps1",
     "updater:publish-release": "powershell -ExecutionPolicy Bypass -File scripts/publish-updates.ps1",
-    "updater:ship-release": "npm run updater:prepare-release && npm run updater:publish-release"
+    "updater:ship-release": "npm run updater:prepare-release && npm run updater:publish-release",
+    "updater:deploy": "powershell -ExecutionPolicy Bypass -File scripts/release-updater.ps1"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",

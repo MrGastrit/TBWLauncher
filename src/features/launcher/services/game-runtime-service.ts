@@ -45,6 +45,7 @@ function getInvoke(): InvokeFn {
 
 export async function toggleGameRuntime(
   modeName: string,
+  userId: string,
   nickname: string,
   gameVersion?: string,
   skinUrl?: string,
@@ -52,6 +53,7 @@ export async function toggleGameRuntime(
   return getInvoke()<GameRuntimeState>('toggle_game_runtime', {
     payload: {
       modeName,
+      userId,
       nickname,
       gameVersion,
       skinUrl,

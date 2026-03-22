@@ -1,5 +1,6 @@
 mod auth;
 mod discord_rpc;
+mod external_links;
 mod game;
 mod settings;
 
@@ -74,6 +75,25 @@ pub fn run() {
     })
     .expect("Failed to connect to Postgres");
 
+    if let Err(error) = tauri::async_runtime::block_on(async {
+        sqlx::query(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN NOT NULL DEFAULT FALSE",
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_users_lower_nickname ON users (lower(nickname))",
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_lower_email ON users (lower(email))")
+            .execute(&pool)
+            .await?;
+        Ok::<(), sqlx::Error>(())
+    }) {
+        eprintln!("Database schema auto-update skipped: {error}");
+    }
+
     tauri::Builder::default()
         .plugin(updater_plugin_builder.build())
         .plugin(tauri_plugin_process::init())
@@ -92,6 +112,9 @@ pub fn run() {
             auth::commands::upload_skin,
             auth::commands::upload_skin_data,
             auth::commands::set_skin_url,
+            auth::commands::admin_list_users,
+            auth::commands::admin_set_user_role,
+            auth::commands::admin_set_user_banned,
             discord_rpc::update_discord_presence,
             game::get_build_installation_states,
             game::get_game_runtime_state,
@@ -99,6 +122,7 @@ pub fn run() {
             game::cancel_active_downloads,
             game::install_build,
             game::toggle_game_runtime,
+            external_links::open_external_url,
             settings::load_launcher_settings,
             settings::save_launcher_settings,
             settings::get_total_ram_mb,

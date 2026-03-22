@@ -6,6 +6,7 @@ export type AuthUser = {
   email: string
   skinUrl?: string
   role: UserRole
+  banned: boolean
 }
 
 export type AuthTokens = {
@@ -50,4 +51,12 @@ export type AccountChangeStatus = {
 export type AuthResult = {
   user: AuthUser
   tokens: AuthTokens
+}
+
+export type AdminUserSummary = {
+  id: string
+  nickname: string
+  email: string
+  role: string
+  banned: boolean
 }

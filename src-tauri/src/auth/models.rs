@@ -9,6 +9,7 @@ pub struct AuthUser {
     pub email: String,
     pub skin_url: Option<String>,
     pub role: String,
+    pub banned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +78,17 @@ pub struct DbUser {
     pub password_hash: String,
     pub skin_url: Option<String>,
     pub role: String,
+    pub banned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminUserSummary {
+    pub id: String,
+    pub nickname: String,
+    pub email: String,
+    pub role: String,
+    pub banned: bool,
 }
 
 #[derive(Debug, Clone, FromRow)]

@@ -4,6 +4,9 @@
 }
 
 import {
+  adminListUsersRequest,
+  adminSetUserBannedRequest,
+  adminSetUserRoleRequest,
   changePasswordRequest,
   getAccountChangeStatusRequest,
   loginRequest,
@@ -14,6 +17,7 @@ import {
   uploadSkinRequest
 } from '../api/auth-client'
 import type {
+  AdminUserSummary,
   AccountChangeStatus,
   AuthResult,
   ChangePasswordPayload,
@@ -90,6 +94,32 @@ export async function setSkinUrl(
   updateStoredSessionSkinUrl(skinUrl)
 }
 
+export async function adminListUsers(
+  actorUserId: string | null | undefined,
+  actorIdentity: string | undefined,
+  search?: string,
+): Promise<AdminUserSummary[]> {
+  return adminListUsersRequest(actorUserId, actorIdentity, search)
+}
+
+export async function adminSetUserRole(
+  actorUserId: string | null | undefined,
+  actorIdentity: string | undefined,
+  targetNickname: string,
+  role: string,
+): Promise<void> {
+  await adminSetUserRoleRequest(actorUserId, actorIdentity, targetNickname, role)
+}
+
+export async function adminSetUserBanned(
+  actorUserId: string | null | undefined,
+  actorIdentity: string | undefined,
+  targetNickname: string,
+  banned: boolean,
+): Promise<void> {
+  await adminSetUserBannedRequest(actorUserId, actorIdentity, targetNickname, banned)
+}
+
 export function restoreSession(): AuthResult | null {
   const raw = localStorage.getItem(authStorageKey)
   if (!raw) {
@@ -109,7 +139,16 @@ export function restoreSession(): AuthResult | null {
       return null
     }
 
-    return parsed.session
+    const normalizedSession: AuthResult = {
+      ...parsed.session,
+      user: {
+        ...parsed.session.user,
+        role: parsed.session.user?.role || 'user',
+        banned: Boolean(parsed.session.user?.banned),
+      },
+    }
+
+    return normalizedSession
   } catch {
     clearSession()
     return null

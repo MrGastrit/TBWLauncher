@@ -12,6 +12,7 @@
     nickname: string
     emailOrLogin: string
     skinUrl?: string
+    role: string
   }
 
   const dispatch = createEventDispatcher<{ authSuccess: AuthSuccessPayload }>()
@@ -44,7 +45,7 @@
   }
 
   function setError(message: string): void {
-    statusMessage = message
+    statusMessage = normalizeErrorMessage(message)
     statusType = 'error'
   }
 
@@ -57,33 +58,110 @@
     id: string,
     nickname: string,
     emailOrLogin: string,
-    skinUrl?: string
+    skinUrl?: string,
+    role = 'user',
   ): void {
     dispatch('authSuccess', {
       id,
       nickname,
       emailOrLogin,
-      skinUrl
+      skinUrl,
+      role,
     })
   }
 
   function extractErrorMessage(error: unknown): string {
     if (error instanceof Error && error.message) {
-      return error.message
+      return normalizeErrorMessage(error.message)
     }
 
     if (typeof error === 'string' && error.trim()) {
-      return error
+      return normalizeErrorMessage(error)
     }
 
     if (typeof error === 'object' && error !== null) {
       const maybeMessage = (error as { message?: unknown }).message
       if (typeof maybeMessage === 'string' && maybeMessage.trim()) {
-        return maybeMessage
+        return normalizeErrorMessage(maybeMessage)
       }
     }
 
     return 'Не удалось выполнить запрос к серверу.'
+  }
+
+  function normalizeErrorMessage(message: string): string {
+    const normalized = message.trim()
+    if (!normalized) {
+      return 'Не удалось выполнить запрос к серверу.'
+    }
+
+    const lower = normalized.toLowerCase()
+    if (lower.includes('email is required')) {
+      return 'Введите email.'
+    }
+    if (lower.includes('nickname must contain at least')) {
+      return 'Ник должен содержать минимум 3 символа.'
+    }
+    if (lower.includes('nickname must not exceed')) {
+      return 'Ник не должен превышать 24 символа.'
+    }
+    if (lower.includes('nickname may contain only')) {
+      return 'Ник может содержать только английские буквы, цифры и нижнее подчеркивание (_).'
+    }
+    if (lower.includes('passwords do not match')) {
+      return 'Пароли не совпадают.'
+    }
+    if (lower.includes('a user with this email already exists')) {
+      return 'Пользователь с таким email уже существует.'
+    }
+    if (lower.includes('this nickname is already taken')) {
+      return 'Ник уже занят.'
+    }
+    if (lower.includes('this account is banned')) {
+      return 'Аккаунт заблокирован. Обратитесь к администрации.'
+    }
+    if (lower.includes('invalid credentials')) {
+      return 'Неверный логин или пароль.'
+    }
+
+    if (!looksCorrupted(normalized)) {
+      return normalized
+    }
+
+    if (mode === 'login') {
+      return 'Неверный логин или пароль.'
+    }
+
+    return 'Произошла ошибка при регистрации. Проверьте введенные данные.'
+  }
+
+  function looksCorrupted(message: string): boolean {
+    if (message.includes('\uFFFD')) {
+      return true
+    }
+
+    if (/[ÐÑ]/.test(message)) {
+      return true
+    }
+
+    let qCount = 0
+    for (const ch of message) {
+      if (ch === '?') {
+        qCount += 1
+      }
+    }
+    if (message.length > 0 && qCount / message.length > 0.2 && qCount >= 3) {
+      return true
+    }
+
+    let rsCount = 0
+    for (const ch of message) {
+      if (ch === 'Р' || ch === 'С') {
+        rsCount += 1
+      }
+    }
+
+    return message.length > 0 && rsCount / message.length > 0.22
   }
 
   async function handleSubmit(event: SubmitEvent): Promise<void> {
@@ -124,7 +202,8 @@
           result.user.id,
           result.user.nickname,
           result.user.email,
-          result.user.skinUrl
+          result.user.skinUrl,
+          result.user.role,
         )
         return
       }
@@ -148,7 +227,8 @@
         result.user.id,
         result.user.nickname,
         result.user.email,
-        result.user.skinUrl
+        result.user.skinUrl,
+        result.user.role,
       )
     } catch (error) {
       console.error('Auth request failed:', error)

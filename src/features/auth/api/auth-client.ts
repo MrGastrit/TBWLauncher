@@ -1,4 +1,5 @@
 import type {
+  AdminUserSummary,
   AccountChangeStatus,
   AuthResult,
   ChangePasswordPayload,
@@ -112,5 +113,45 @@ export async function setSkinUrlRequest(
     userId: userId?.trim() || undefined,
     identity: identity?.trim() || undefined,
     skinUrl,
+  })
+}
+
+export async function adminListUsersRequest(
+  actorUserId?: string | null,
+  actorIdentity?: string,
+  search?: string,
+): Promise<AdminUserSummary[]> {
+  return getInvoke()<AdminUserSummary[]>('admin_list_users', {
+    actorUserId: actorUserId?.trim() || undefined,
+    actorIdentity: actorIdentity?.trim() || undefined,
+    search: search?.trim() || undefined,
+  })
+}
+
+export async function adminSetUserRoleRequest(
+  actorUserId: string | null | undefined,
+  actorIdentity: string | undefined,
+  targetNickname: string,
+  role: string,
+): Promise<void> {
+  await getInvoke()<void>('admin_set_user_role', {
+    actorUserId: actorUserId?.trim() || undefined,
+    actorIdentity: actorIdentity?.trim() || undefined,
+    targetNickname,
+    role,
+  })
+}
+
+export async function adminSetUserBannedRequest(
+  actorUserId: string | null | undefined,
+  actorIdentity: string | undefined,
+  targetNickname: string,
+  banned: boolean,
+): Promise<void> {
+  await getInvoke()<void>('admin_set_user_banned', {
+    actorUserId: actorUserId?.trim() || undefined,
+    actorIdentity: actorIdentity?.trim() || undefined,
+    targetNickname,
+    banned,
   })
 }

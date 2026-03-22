@@ -7,6 +7,7 @@
     nickname: string
     emailOrLogin: string
     skinUrl?: string
+    role: string
   }
 
   const dispatch = createEventDispatcher<{ authSuccess: AuthSuccessPayload }>()

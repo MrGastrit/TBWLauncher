@@ -3,7 +3,7 @@
 This project is configured for Tauri v2 updater.  
 Endpoint is set to:
 
-- `https://vm863690.hosted-by.u1host.com/updates/latest.json`
+- `http://144.31.73.2/updates/latest.json`
 
 ## 1) Generate updater keys (one time)
 
@@ -36,15 +36,16 @@ This updates `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
 Before build, set signing env vars in current PowerShell:
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH="$env:USERPROFILE\\.tauri\\tbw-updater.key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD="<your-key-password>"
+$keyPath = "$env:USERPROFILE\\.tauri\\tbw-updater.key"
+$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -LiteralPath $keyPath -Raw).Trim()
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<your-key-password>"
 ```
 
 Then build:
 
 ```powershell
 cd src-tauri
-cargo tauri build
+cargo tauri build --bundles nsis
 ```
 
 ## 4) Prepare `latest.json` + updater files
@@ -78,6 +79,15 @@ From project root:
 npm run updater:publish-release
 ```
 
+The upload script runs in non-interactive SSH mode.  
+It requires working key-based SSH access to the VPS (`ssh root@144.31.73.2` without password prompt).
+
+If you want password prompt mode (temporary/manual), run:
+
+```powershell
+npm run updater:publish-release -- -Interactive
+```
+
 Default target:
 
 - Host: `root@144.31.73.2`
@@ -89,12 +99,38 @@ One-command shortcut (prepare + upload):
 npm run updater:ship-release
 ```
 
-## 6) Verify
+## 6) Fully automatic deploy (build + latest.json + upload)
+
+From project root:
+
+```powershell
+npm run updater:deploy -- -PrivateKeyPassword "<your-key-password>"
+```
+
+If you want to pass password through env variable instead:
+
+```powershell
+$env:TAURI_PRIVATE_KEY_PASSWORD = "<your-key-password>"
+npm run updater:deploy
+```
+
+Optional flags:
+
+- `-PrivateKeyPath` (default: `%USERPROFILE%\\.tauri\\tbw-updater.key`)
+- `-RemoteHost`
+- `-RemoteDir`
+- `-BaseUrl`
+- `-PlatformKey`
+- `-Notes`
+- `-SkipBuild`
+- `-Interactive` (ask VPS password in SSH/SCP instead of key-only mode)
+
+## 7) Verify
 
 On VPS:
 
 ```bash
-curl -I https://vm863690.hosted-by.u1host.com/updates/latest.json
+curl -I http://144.31.73.2/updates/latest.json
 ```
 
 If you get `200 OK`, updater endpoint is reachable.

@@ -1,7 +1,7 @@
 use crate::auth::errors::AuthError;
 use crate::auth::models::{
-    AccountChangeStatus, AuthResult, AuthTokens, AuthUser, ChangePasswordPayload,
-    DbAccountChangeStatus, LoginPayload, RegisterPayload, UpdateAccountPayload,
+    AccountChangeStatus, AdminUserSummary, AuthResult, AuthTokens, AuthUser, ChangePasswordPayload,
+    DbAccountChangeStatus, DbUser, LoginPayload, RegisterPayload, UpdateAccountPayload,
 };
 use crate::auth::repository;
 use argon2::password_hash::rand_core::OsRng;
@@ -9,9 +9,9 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::Argon2;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
-use reqwest::blocking::Client as BlockingHttpClient;
 use reqwest::header::CONTENT_TYPE;
-use sqlx::PgPool;
+use reqwest::Client as AsyncHttpClient;
+use sqlx::{Error as SqlxError, PgPool};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -20,6 +20,7 @@ use uuid::Uuid;
 const MIN_NICKNAME_LEN: usize = 3;
 const MAX_NICKNAME_LEN: usize = 24;
 const CHANGE_COOLDOWN_DAYS: i64 = 30;
+const ADMIN_USER_LIST_LIMIT: i64 = 500;
 const SKIN_CDN_BASE_URL_ENV: &str = "SKIN_CDN_BASE_URL";
 const SKIN_CDN_UPLOAD_URL_ENV: &str = "SKIN_CDN_UPLOAD_URL";
 const SKIN_CDN_BASIC_USER_ENV: &str = "SKIN_CDN_BASIC_USER";
@@ -28,6 +29,17 @@ const SKIN_CDN_AUTH_HEADER_NAME_ENV: &str = "SKIN_CDN_AUTH_HEADER_NAME";
 const SKIN_CDN_AUTH_HEADER_VALUE_ENV: &str = "SKIN_CDN_AUTH_HEADER_VALUE";
 const SKIN_CDN_TIMEOUT_SECONDS_ENV: &str = "SKIN_CDN_TIMEOUT_SECONDS";
 const SKIN_CDN_DEFAULT_TIMEOUT_SECONDS: u64 = 20;
+const ALLOWED_ROLE_NAMES: [&str; 4] = ["user", "vip", "tech", "admin"];
+const EMAIL_REQUIRED_MESSAGE: &str = "Email is required.";
+const NICKNAME_MIN_MESSAGE: &str = "Nickname must contain at least 3 characters.";
+const NICKNAME_MAX_MESSAGE: &str = "Nickname must not exceed 24 characters.";
+const NICKNAME_FORMAT_MESSAGE: &str =
+    "Nickname may contain only English letters, digits and underscore (_).";
+const PASSWORDS_MISMATCH_MESSAGE: &str = "Passwords do not match.";
+const EMAIL_ALREADY_EXISTS_MESSAGE: &str = "A user with this email already exists.";
+const NICKNAME_ALREADY_EXISTS_MESSAGE: &str = "This nickname is already taken.";
+const ACCOUNT_BANNED_MESSAGE: &str = "This account is banned. Contact administration.";
+const INVALID_CREDENTIALS_MESSAGE: &str = "Invalid credentials.";
 
 #[derive(Debug, Clone)]
 struct SkinCdnConfig {
@@ -43,28 +55,22 @@ struct SkinCdnConfig {
 pub async fn register(pool: &PgPool, payload: RegisterPayload) -> Result<AuthResult, AuthError> {
     let normalized_email = payload.email.trim();
     if normalized_email.is_empty() {
-        return Err(AuthError::Validation("Email обязателен.".into()));
+        return Err(AuthError::Validation(EMAIL_REQUIRED_MESSAGE.into()));
     }
 
     let normalized_nickname = payload.nickname.trim();
     if normalized_nickname.len() < MIN_NICKNAME_LEN {
-        return Err(AuthError::Validation(
-            "Ник должен содержать минимум 3 символа.".into(),
-        ));
+        return Err(AuthError::Validation(NICKNAME_MIN_MESSAGE.into()));
     }
     if normalized_nickname.len() > MAX_NICKNAME_LEN {
-        return Err(AuthError::Validation(
-            "Ник не должен превышать 24 символа.".into(),
-        ));
+        return Err(AuthError::Validation(NICKNAME_MAX_MESSAGE.into()));
     }
     if !is_valid_registration_nickname(normalized_nickname) {
-        return Err(AuthError::Validation(
-            "Ник может содержать только английские буквы, цифры и нижнее подчеркивание (_).".into(),
-        ));
+        return Err(AuthError::Validation(NICKNAME_FORMAT_MESSAGE.into()));
     }
 
     if payload.password != payload.repeat_password {
-        return Err(AuthError::Validation("Пароли не совпадают.".into()));
+        return Err(AuthError::Validation(PASSWORDS_MISMATCH_MESSAGE.into()));
     }
 
     let existing_email = repository::find_user_by_identity(pool, normalized_email)
@@ -72,9 +78,7 @@ pub async fn register(pool: &PgPool, payload: RegisterPayload) -> Result<AuthRes
         .map_err(|error| AuthError::Internal(error.to_string()))?;
 
     if existing_email.is_some() {
-        return Err(AuthError::Validation(
-            "Пользователь с таким email уже существует.".into(),
-        ));
+        return Err(AuthError::Validation(EMAIL_ALREADY_EXISTS_MESSAGE.into()));
     }
 
     let existing_nickname = repository::find_user_by_identity(pool, normalized_nickname)
@@ -82,7 +86,9 @@ pub async fn register(pool: &PgPool, payload: RegisterPayload) -> Result<AuthRes
         .map_err(|error| AuthError::Internal(error.to_string()))?;
 
     if existing_nickname.is_some() {
-        return Err(AuthError::Validation("Ник уже занят.".into()));
+        return Err(AuthError::Validation(
+            NICKNAME_ALREADY_EXISTS_MESSAGE.into(),
+        ));
     }
 
     let normalized_payload = RegisterPayload {
@@ -105,6 +111,7 @@ pub async fn register(pool: &PgPool, payload: RegisterPayload) -> Result<AuthRes
             email: user.email,
             skin_url: user.skin_url,
             role: user.role,
+            banned: user.banned,
         },
         tokens: AuthTokens {
             access_token: Uuid::new_v4().to_string(),
@@ -117,10 +124,14 @@ pub async fn login(pool: &PgPool, payload: LoginPayload) -> Result<AuthResult, A
     let user = repository::find_user_by_identity(pool, &payload.identity)
         .await
         .map_err(|error| AuthError::Internal(error.to_string()))?
-        .ok_or_else(|| AuthError::Validation("Неверный логин или пароль.".into()))?;
+        .ok_or_else(|| AuthError::Validation(INVALID_CREDENTIALS_MESSAGE.into()))?;
+
+    if user.banned {
+        return Err(AuthError::Validation(ACCOUNT_BANNED_MESSAGE.into()));
+    }
 
     verify_password(&payload.password, &user.password_hash)
-        .map_err(|_| AuthError::Validation("Неверный логин или пароль.".into()))?;
+        .map_err(|_| AuthError::Validation(INVALID_CREDENTIALS_MESSAGE.into()))?;
 
     Ok(AuthResult {
         user: AuthUser {
@@ -129,6 +140,7 @@ pub async fn login(pool: &PgPool, payload: LoginPayload) -> Result<AuthResult, A
             email: user.email,
             skin_url: user.skin_url,
             role: user.role,
+            banned: user.banned,
         },
         tokens: AuthTokens {
             access_token: Uuid::new_v4().to_string(),
@@ -158,19 +170,13 @@ pub async fn update_account(
 
         if normalized_nickname != current_user.nickname {
             if normalized_nickname.len() < MIN_NICKNAME_LEN {
-                return Err(AuthError::Validation(
-                    "Ник должен содержать минимум 3 символа.".into(),
-                ));
+                return Err(AuthError::Validation(NICKNAME_MIN_MESSAGE.into()));
             }
             if normalized_nickname.len() > MAX_NICKNAME_LEN {
-                return Err(AuthError::Validation(
-                    "Ник не должен превышать 24 символа.".into(),
-                ));
+                return Err(AuthError::Validation(NICKNAME_MAX_MESSAGE.into()));
             }
             if !is_valid_registration_nickname(normalized_nickname) {
-                return Err(AuthError::Validation(
-          "Ник может содержать только английские буквы, цифры и нижнее подчеркивание (_).".into(),
-        ));
+                return Err(AuthError::Validation(NICKNAME_FORMAT_MESSAGE.into()));
             }
 
             let existing_nickname =
@@ -290,6 +296,100 @@ pub async fn get_account_change_status(
     Ok(map_account_change_status(status))
 }
 
+pub async fn admin_list_users(
+    pool: &PgPool,
+    actor_user_id: Option<String>,
+    actor_identity: Option<String>,
+    search: Option<String>,
+) -> Result<Vec<AdminUserSummary>, AuthError> {
+    let _actor =
+        ensure_admin_or_tech(pool, actor_user_id.as_deref(), actor_identity.as_deref()).await?;
+
+    repository::list_users_for_admin(
+        pool,
+        search
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        ADMIN_USER_LIST_LIMIT,
+    )
+    .await
+    .map_err(|error| AuthError::Internal(error.to_string()))
+}
+
+pub async fn admin_set_user_role(
+    pool: &PgPool,
+    actor_user_id: Option<String>,
+    actor_identity: Option<String>,
+    target_nickname: String,
+    role: String,
+) -> Result<(), AuthError> {
+    let actor =
+        ensure_admin_or_tech(pool, actor_user_id.as_deref(), actor_identity.as_deref()).await?;
+    let target_nickname = target_nickname.trim();
+    if target_nickname.is_empty() {
+        return Err(AuthError::Validation(
+            "Ник пользователя для смены роли обязателен.".into(),
+        ));
+    }
+
+    let normalized_role = normalize_role_name(role.as_str()).ok_or_else(|| {
+        AuthError::Validation("Роль должна быть одной из: user, vip, tech, admin.".into())
+    })?;
+
+    let target_user = repository::find_user_by_nickname_case_insensitive(pool, target_nickname)
+        .await
+        .map_err(|error| AuthError::Internal(error.to_string()))?
+        .ok_or_else(|| AuthError::Validation("Пользователь не найден.".into()))?;
+
+    if actor.id == target_user.id {
+        return Err(AuthError::Validation(
+            "Нельзя менять собственную роль через админ-панель.".into(),
+        ));
+    }
+
+    ensure_target_manageable(&actor, &target_user)?;
+    ensure_target_role_assignable(&actor, normalized_role.as_str())?;
+
+    repository::update_user_role(pool, target_user.id.as_str(), normalized_role.as_str())
+        .await
+        .map_err(|error| AuthError::Internal(error.to_string()))
+}
+
+pub async fn admin_set_user_banned(
+    pool: &PgPool,
+    actor_user_id: Option<String>,
+    actor_identity: Option<String>,
+    target_nickname: String,
+    banned: bool,
+) -> Result<(), AuthError> {
+    let actor =
+        ensure_admin_or_tech(pool, actor_user_id.as_deref(), actor_identity.as_deref()).await?;
+    let target_nickname = target_nickname.trim();
+    if target_nickname.is_empty() {
+        return Err(AuthError::Validation(
+            "Ник пользователя для блокировки обязателен.".into(),
+        ));
+    }
+
+    let target_user = repository::find_user_by_nickname_case_insensitive(pool, target_nickname)
+        .await
+        .map_err(|error| AuthError::Internal(error.to_string()))?
+        .ok_or_else(|| AuthError::Validation("Пользователь не найден.".into()))?;
+
+    if actor.id == target_user.id {
+        return Err(AuthError::Validation(
+            "Нельзя блокировать собственный аккаунт.".into(),
+        ));
+    }
+
+    ensure_target_manageable(&actor, &target_user)?;
+
+    repository::update_user_banned(pool, target_user.id.as_str(), banned)
+        .await
+        .map_err(map_admin_ban_update_error)
+}
+
 pub async fn set_skin_url(
     pool: &PgPool,
     user_id: Option<String>,
@@ -378,6 +478,97 @@ async fn resolve_user_id(
     ))
 }
 
+async fn ensure_admin_or_tech(
+    pool: &PgPool,
+    actor_user_id: Option<&str>,
+    actor_identity: Option<&str>,
+) -> Result<DbUser, AuthError> {
+    let actor_id = resolve_user_id(pool, actor_user_id, actor_identity).await?;
+    let actor = repository::find_user_by_id(pool, actor_id.as_str())
+        .await
+        .map_err(|error| AuthError::Internal(error.to_string()))?
+        .ok_or_else(|| AuthError::Validation("Пользователь-администратор не найден.".into()))?;
+
+    if actor.banned {
+        return Err(AuthError::Validation(
+            "Заблокированный аккаунт не может использовать админ-панель.".into(),
+        ));
+    }
+
+    if !has_admin_access(actor.role.as_str()) {
+        return Err(AuthError::Validation(
+            "Недостаточно прав для доступа к админ-панели.".into(),
+        ));
+    }
+
+    Ok(actor)
+}
+
+fn has_admin_access(role: &str) -> bool {
+    role.eq_ignore_ascii_case("admin") || role.eq_ignore_ascii_case("tech")
+}
+
+fn normalize_role_name(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if ALLOWED_ROLE_NAMES
+        .iter()
+        .any(|allowed| allowed == &normalized.as_str())
+    {
+        return Some(normalized);
+    }
+
+    None
+}
+
+fn ensure_target_manageable(actor: &DbUser, target: &DbUser) -> Result<(), AuthError> {
+    if actor.role.eq_ignore_ascii_case("admin") {
+        return Ok(());
+    }
+
+    if target.role.eq_ignore_ascii_case("admin") || target.role.eq_ignore_ascii_case("tech") {
+        return Err(AuthError::Validation(
+            "Роль tech может управлять только пользователями user/vip.".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_target_role_assignable(actor: &DbUser, next_role: &str) -> Result<(), AuthError> {
+    if actor.role.eq_ignore_ascii_case("admin") {
+        return Ok(());
+    }
+
+    if next_role.eq_ignore_ascii_case("admin") || next_role.eq_ignore_ascii_case("tech") {
+        return Err(AuthError::Validation(
+            "Роль tech может назначать только роли user/vip.".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn map_admin_ban_update_error(error: SqlxError) -> AuthError {
+    if let SqlxError::Database(db_error) = &error {
+        if let Some(code) = db_error.code().as_deref() {
+            if code == "42703" {
+                return AuthError::Validation(
+                    "В таблице users отсутствует колонка banned. Добавьте ее под владельцем БД."
+                        .into(),
+                );
+            }
+
+            if code == "42501" {
+                return AuthError::Validation(
+                    "Недостаточно прав для изменения флага banned. Выполните GRANT/ALTER под владельцем БД.".into(),
+                );
+            }
+        }
+    }
+
+    AuthError::Internal(error.to_string())
+}
+
 async fn persist_skin_from_file(
     pool: &PgPool,
     user_id: &str,
@@ -411,7 +602,7 @@ async fn persist_skin_bytes(
     let skin_file_name = resolve_skin_file_name(pool, user_id, skin_name).await?;
     if let Some(cdn_config) = load_skin_cdn_config() {
         let stored_skin_url =
-            upload_skin_bytes_to_cdn(&cdn_config, skin_file_name.as_str(), image_bytes)?;
+            upload_skin_bytes_to_cdn(&cdn_config, skin_file_name.as_str(), image_bytes).await?;
         repository::update_skin_url(pool, user_id, Some(stored_skin_url.as_str()))
             .await
             .map_err(|error| AuthError::Internal(error.to_string()))?;
@@ -509,14 +700,14 @@ fn load_skin_cdn_config() -> Option<SkinCdnConfig> {
     })
 }
 
-fn upload_skin_bytes_to_cdn(
+async fn upload_skin_bytes_to_cdn(
     config: &SkinCdnConfig,
     file_name: &str,
     image_bytes: &[u8],
 ) -> Result<String, AuthError> {
     let public_url = join_url(config.public_base_url.as_str(), file_name);
     let upload_url = join_url(config.upload_base_url.as_str(), file_name);
-    let http_client = BlockingHttpClient::builder()
+    let http_client = AsyncHttpClient::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))
         .build()
         .map_err(|error| {
@@ -541,7 +732,7 @@ fn upload_skin_bytes_to_cdn(
         request = request.header(header_name, header_value);
     }
 
-    let response = request.send().map_err(|error| {
+    let response = request.send().await.map_err(|error| {
         AuthError::Internal(format!(
             "Failed to upload skin to CDN {upload_url}: {error}"
         ))
@@ -549,7 +740,7 @@ fn upload_skin_bytes_to_cdn(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().unwrap_or_default();
+        let body = response.text().await.unwrap_or_default();
         return Err(AuthError::Internal(format!(
             "Failed to upload skin to CDN {upload_url}: HTTP {} {}",
             status.as_u16(),

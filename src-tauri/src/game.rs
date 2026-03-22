@@ -50,6 +50,7 @@ pub struct RunningGame {
 #[serde(rename_all = "camelCase")]
 pub struct ToggleGameRuntimePayload {
     pub mode_name: String,
+    pub user_id: Option<String>,
     pub nickname: String,
     pub game_version: Option<String>,
     pub skin_url: Option<String>,
@@ -277,6 +278,13 @@ pub async fn toggle_game_runtime(
         payload.nickname.trim().to_string()
     };
 
+    if let Some(user_record) =
+        resolve_launch_user_record(&state, payload.user_id.as_deref(), nickname.as_str()).await
+    {
+        if user_record.banned {
+            return Err("Account is banned. Launch is unavailable.".to_string());
+        }
+    }
     let current_game = {
         let mut running_game = state
             .running_game
@@ -340,9 +348,12 @@ pub async fn toggle_game_runtime(
     let mut launcher_skin_records = resolve_launcher_skin_records_from_database(&state).await;
     if let Some(current_skin_source) = launch_skin_url.as_deref() {
         let current_nickname_key = nickname.trim().to_ascii_lowercase();
-        let already_present = launcher_skin_records
-            .iter()
-            .any(|entry| entry.nickname.trim().eq_ignore_ascii_case(nickname.as_str()));
+        let already_present = launcher_skin_records.iter().any(|entry| {
+            entry
+                .nickname
+                .trim()
+                .eq_ignore_ascii_case(nickname.as_str())
+        });
         if !current_nickname_key.is_empty() && !already_present {
             launcher_skin_records.push(LauncherSkinRecord {
                 nickname: nickname.clone(),
@@ -418,6 +429,43 @@ pub async fn toggle_game_runtime(
     })
 }
 
+async fn resolve_launch_user_record(
+    state: &State<'_, AppState>,
+    user_id: Option<&str>,
+    nickname: &str,
+) -> Option<crate::auth::models::DbUser> {
+    if let Some(resolved_user_id) = user_id.map(str::trim).filter(|value| !value.is_empty()) {
+        match crate::auth::repository::find_user_by_id(&state.pool, resolved_user_id).await {
+            Ok(Some(user)) => return Some(user),
+            Ok(None) => {
+                eprintln!("Launch user id {resolved_user_id} was not found. Falling back to nickname lookup.");
+            }
+            Err(error) => {
+                eprintln!(
+                    "Failed to resolve launch user by id {resolved_user_id}: {error}. Falling back to nickname lookup.",
+                );
+            }
+        }
+    }
+
+    let normalized_nickname = nickname.trim();
+    if normalized_nickname.is_empty() {
+        return None;
+    }
+
+    match crate::auth::repository::find_user_by_nickname_case_insensitive(
+        &state.pool,
+        normalized_nickname,
+    )
+    .await
+    {
+        Ok(user) => user,
+        Err(error) => {
+            eprintln!("Failed to resolve launch user by nickname {normalized_nickname}: {error}");
+            None
+        }
+    }
+}
 async fn resolve_user_skin_url_from_database(
     state: &State<'_, AppState>,
     nickname: &str,
@@ -428,14 +476,26 @@ async fn resolve_user_skin_url_from_database(
     }
 
     match crate::auth::repository::find_user_by_identity(&state.pool, identity).await {
-        Ok(Some(user)) => normalize_user_skin_url(user.skin_url.as_deref()),
+        Ok(Some(user)) => {
+            if user.banned {
+                None
+            } else {
+                normalize_user_skin_url(user.skin_url.as_deref())
+            }
+        }
         Ok(None) => match crate::auth::repository::find_user_by_nickname_case_insensitive(
             &state.pool,
             identity,
         )
         .await
         {
-            Ok(Some(user)) => normalize_user_skin_url(user.skin_url.as_deref()),
+            Ok(Some(user)) => {
+                if user.banned {
+                    None
+                } else {
+                    normalize_user_skin_url(user.skin_url.as_deref())
+                }
+            }
             Ok(None) => None,
             Err(error) => {
                 eprintln!(
@@ -461,6 +521,7 @@ async fn resolve_launcher_skin_records_from_database(
     WHERE btrim(nickname) <> ''
       AND skin_url IS NOT NULL
       AND btrim(skin_url) <> ''
+      AND COALESCE((to_jsonb(users)->>'banned')::boolean, FALSE) = FALSE
     "#,
     )
     .fetch_all(&state.pool)
@@ -1754,7 +1815,8 @@ fn spawn_game_process(
         .filter(|value| !value.is_empty());
     let selected_skin_path =
         resolve_selected_skin_file_path(plan, selected_skin_source, cancel_state);
-    let skin_cdn_base_url = resolve_skin_cdn_base_url();
+    let skin_cdn_base_url =
+        resolve_effective_skin_cdn_base_url(selected_skin_source, launcher_skin_records);
     let skin_exchange_dir = resolve_skin_exchange_dir(plan);
     if let Some(source_skin_path) = selected_skin_path.as_deref() {
         eprintln!("Resolved launch skin file: {}", source_skin_path.display());
@@ -1775,10 +1837,6 @@ fn spawn_game_process(
     }
     ensure_launch_paths_writable(plan)?;
 
-    if let Err(error) = enforce_local_skin_only_configuration(plan) {
-        eprintln!("Failed to enforce local-only skin configuration: {error}");
-    }
-
     if let Err(error) = sync_launcher_player_skins_into_game(
         plan,
         nickname,
@@ -1786,6 +1844,7 @@ fn spawn_game_process(
         selected_skin_path.as_deref(),
         launcher_skin_records,
         skin_exchange_dir.as_path(),
+        skin_cdn_base_url.as_deref(),
         cancel_state,
     ) {
         eprintln!("Failed to prepare launcher player skins for launch: {error}");
@@ -2116,6 +2175,97 @@ fn resolve_skin_cdn_base_url() -> Option<String> {
     Some(normalized)
 }
 
+fn resolve_effective_skin_cdn_base_url(
+    selected_skin_source: Option<&str>,
+    launcher_skin_records: &[LauncherSkinRecord],
+) -> Option<String> {
+    if let Some(configured) = resolve_skin_cdn_base_url() {
+        return Some(configured);
+    }
+
+    if let Some(source) = selected_skin_source {
+        if let Some(derived) = derive_skin_cdn_base_url_from_url(source) {
+            return Some(derived);
+        }
+    }
+
+    for record in launcher_skin_records {
+        if let Some(derived) = derive_skin_cdn_base_url_from_url(record.skin_url.as_str()) {
+            return Some(derived);
+        }
+    }
+
+    None
+}
+
+fn derive_skin_cdn_base_url_from_url(value: &str) -> Option<String> {
+    let normalized = value
+        .trim()
+        .split('#')
+        .next()
+        .unwrap_or("")
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let lowered = normalized.to_ascii_lowercase();
+    if !lowered.starts_with("http://") && !lowered.starts_with("https://") {
+        return None;
+    }
+
+    let slash_index = normalized.rfind('/')?;
+    let file_name = normalized.get(slash_index + 1..)?.trim();
+    if file_name.is_empty() {
+        return None;
+    }
+
+    if !file_name.to_ascii_lowercase().ends_with(".png") {
+        return None;
+    }
+
+    let mut base = normalized[..slash_index].trim_end_matches('/').to_string();
+    let base_lower = base.to_ascii_lowercase();
+    if base_lower.ends_with("/skins-upload") {
+        let prefix = &base[..base.len() - "/skins-upload".len()];
+        base = format!("{prefix}/skins");
+    } else if !base_lower.ends_with("/skins") {
+        return None;
+    }
+
+    if base.is_empty() {
+        return None;
+    }
+
+    Some(base)
+}
+
+fn build_nickname_cdn_skin_url(base_url: &str, nickname: &str) -> Option<String> {
+    let normalized_nickname = sanitize_cdn_skin_file_stem(nickname);
+    if normalized_nickname.is_empty() {
+        return None;
+    }
+
+    Some(format!("{base_url}/{normalized_nickname}.png"))
+}
+
+fn sanitize_cdn_skin_file_stem(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+}
+
 fn apply_selected_skin_environment(
     command: &mut Command,
     selected_skin_source: Option<&str>,
@@ -2230,11 +2380,50 @@ fn sync_launcher_player_skins_into_game(
     current_selected_skin_path: Option<&Path>,
     launcher_skin_records: &[LauncherSkinRecord],
     skin_exchange_dir: &Path,
+    skin_cdn_base_url: Option<&str>,
     cancel_state: Option<&SharedInstallCancel>,
 ) -> Result<(), String> {
     let mut synced_nickname_keys = HashSet::new();
     let current_nickname_key = current_nickname.trim().to_ascii_lowercase();
     let mut synced_players_count = 0usize;
+
+    if skin_cdn_base_url.is_some() {
+        if let Some(source_skin_path) = current_selected_skin_path {
+            sync_selected_skin_into_game(
+                plan,
+                current_nickname,
+                source_skin_path,
+                skin_exchange_dir,
+            )?;
+            eprintln!(
+                "Prepared selected launcher skin for current player {current_nickname} (CDN mode)."
+            );
+            return Ok(());
+        }
+
+        if let Some(source) = current_selected_skin_source.filter(|value| !value.trim().is_empty())
+        {
+            if let Some(source_skin_path) =
+                resolve_selected_skin_file_path(plan, Some(source), cancel_state)
+            {
+                sync_selected_skin_into_game(
+                    plan,
+                    current_nickname,
+                    source_skin_path.as_path(),
+                    skin_exchange_dir,
+                )?;
+                eprintln!(
+                    "Prepared selected launcher skin for current player {current_nickname} using source fallback (CDN mode)."
+                );
+                return Ok(());
+            }
+        }
+
+        eprintln!(
+            "CDN mode is enabled. Skipping bulk local skin sync and relying on runtime CDN fetch for other players."
+        );
+        return Ok(());
+    }
 
     if let Some(source_skin_path) = current_selected_skin_path {
         sync_selected_skin_into_game(plan, current_nickname, source_skin_path, skin_exchange_dir)?;
@@ -2264,7 +2453,7 @@ fn sync_launcher_player_skins_into_game(
             continue;
         }
 
-        let resolved_skin_path = if let Some(cached) = resolved_source_cache.get(skin_source) {
+        let mut resolved_skin_path = if let Some(cached) = resolved_source_cache.get(skin_source) {
             cached.clone()
         } else {
             let resolved = resolve_selected_skin_file_path(plan, Some(skin_source), cancel_state);
@@ -2272,14 +2461,41 @@ fn sync_launcher_player_skins_into_game(
             resolved
         };
 
+        if resolved_skin_path.is_none() {
+            if let Some(cdn_url) = skin_cdn_base_url
+                .as_deref()
+                .and_then(|base_url| build_nickname_cdn_skin_url(base_url, nickname))
+            {
+                resolved_skin_path = if let Some(cached) = resolved_source_cache.get(&cdn_url) {
+                    cached.clone()
+                } else {
+                    let resolved =
+                        resolve_selected_skin_file_path(plan, Some(cdn_url.as_str()), cancel_state);
+                    resolved_source_cache.insert(cdn_url.clone(), resolved.clone());
+                    resolved
+                };
+
+                if resolved_skin_path.is_some() {
+                    eprintln!(
+                        "Resolved launcher skin for player {nickname} using CDN fallback: {cdn_url}"
+                    );
+                }
+            }
+        }
+
         let Some(source_skin_path) = resolved_skin_path else {
-            eprintln!("Failed to resolve launcher skin source for player {nickname}: {skin_source}");
+            eprintln!(
+                "Failed to resolve launcher skin source for player {nickname}: {skin_source}"
+            );
             continue;
         };
 
-        if let Err(error) =
-            sync_selected_skin_into_game(plan, nickname, source_skin_path.as_path(), skin_exchange_dir)
-        {
+        if let Err(error) = sync_selected_skin_into_game(
+            plan,
+            nickname,
+            source_skin_path.as_path(),
+            skin_exchange_dir,
+        ) {
             eprintln!("Failed to sync launcher skin for player {nickname}: {error}");
             continue;
         }
@@ -2289,8 +2505,10 @@ fn sync_launcher_player_skins_into_game(
     }
 
     if current_selected_skin_path.is_none() {
-        if let Some(source) = current_selected_skin_source.filter(|value| !value.trim().is_empty()) {
-            if let Some(source_skin_path) = resolve_selected_skin_file_path(plan, Some(source), cancel_state)
+        if let Some(source) = current_selected_skin_source.filter(|value| !value.trim().is_empty())
+        {
+            if let Some(source_skin_path) =
+                resolve_selected_skin_file_path(plan, Some(source), cancel_state)
             {
                 if let Err(error) = sync_selected_skin_into_game(
                     plan,
@@ -2298,7 +2516,9 @@ fn sync_launcher_player_skins_into_game(
                     source_skin_path.as_path(),
                     skin_exchange_dir,
                 ) {
-                    eprintln!("Failed to sync selected launcher skin for {current_nickname}: {error}");
+                    eprintln!(
+                        "Failed to sync selected launcher skin for {current_nickname}: {error}"
+                    );
                 } else if !current_nickname_key.is_empty() {
                     synced_nickname_keys.insert(current_nickname_key.clone());
                     synced_players_count += 1;
@@ -2307,9 +2527,7 @@ fn sync_launcher_player_skins_into_game(
         }
     }
 
-    eprintln!(
-        "Prepared launcher skins for {synced_players_count} player(s) before game launch."
-    );
+    eprintln!("Prepared launcher skins for {synced_players_count} player(s) before game launch.");
 
     Ok(())
 }
@@ -2354,108 +2572,13 @@ fn sync_selected_skin_into_game(
 }
 
 fn skin_sync_target_roots(plan: &LaunchPlan, skin_exchange_dir: &Path) -> Vec<PathBuf> {
-    let mut roots = local_skin_target_roots(plan);
+    let mut roots = Vec::with_capacity(2);
     roots.push(skin_exchange_dir.to_path_buf());
+    roots.push(plan.game_dir.join("TBWLauncherSkins").join("skins"));
 
     let mut seen = HashSet::new();
     roots.retain(|root| seen.insert(root.clone()));
     roots
-}
-
-fn enforce_local_skin_only_configuration(plan: &LaunchPlan) -> Result<(), String> {
-    let payload = serde_json::json!({
-      "enable": true,
-      "loadlist": [
-        {
-          "name": "LocalSkin",
-          "type": "Legacy",
-          "checkPNG": false,
-          "skin": "LocalSkin/skins/{USERNAME}.png",
-          "model": "auto",
-          "cape": "LocalSkin/capes/{USERNAME}.png",
-          "elytra": "LocalSkin/elytras/{USERNAME}.png"
-        }
-      ],
-      "sources": [
-        {
-          "name": "LocalSkin",
-          "type": "Legacy",
-          "checkPNG": false,
-          "skin": "LocalSkin/skins/{USERNAME}.png",
-          "model": "auto",
-          "cape": "LocalSkin/capes/{USERNAME}.png",
-          "elytra": "LocalSkin/elytras/{USERNAME}.png"
-        }
-      ],
-      "enableMojangSkin": false,
-      "enableMojangCape": false,
-      "enableMojangElytra": false,
-      "enableMojangProfile": false,
-      "enableMojang": false,
-      "enableDynamicSkull": false,
-      "enableUpdateSkull": false,
-      "enableLocalProfileCache": false
-    });
-    let serialized = serde_json::to_string_pretty(&payload)
-        .map_err(|error| format!("Failed to serialize local skin config: {error}"))?;
-
-    let config_paths = custom_skin_loader_config_paths(plan);
-
-    for config_path in config_paths {
-        if let Some(parent_dir) = config_path.parent() {
-            fs::create_dir_all(parent_dir).map_err(|error| {
-                format!(
-                    "Failed to create directory {}: {error}",
-                    parent_dir.display()
-                )
-            })?;
-        }
-
-        fs::write(&config_path, &serialized)
-            .map_err(|error| format!("Failed to write {}: {error}", config_path.display()))?;
-    }
-
-    Ok(())
-}
-
-fn local_skin_target_roots(plan: &LaunchPlan) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let base_dirs = [plan.game_dir.as_path(), plan.working_dir.as_path()];
-
-    for base_dir in base_dirs {
-        roots.push(base_dir.join("LocalSkin").join("skins"));
-        roots.push(
-            base_dir
-                .join("CustomSkinLoader")
-                .join("LocalSkin")
-                .join("skins"),
-        );
-    }
-
-    roots
-}
-
-fn custom_skin_loader_config_paths(plan: &LaunchPlan) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    let base_dirs = [plan.game_dir.as_path(), plan.working_dir.as_path()];
-
-    for base_dir in base_dirs {
-        paths.push(
-            base_dir
-                .join("CustomSkinLoader")
-                .join("CustomSkinLoader.json"),
-        );
-        paths.push(base_dir.join("CustomSkinLoader.json"));
-        paths.push(
-            base_dir
-                .join("config")
-                .join("CustomSkinLoader")
-                .join("CustomSkinLoader.json"),
-        );
-        paths.push(base_dir.join("config").join("CustomSkinLoader.json"));
-    }
-
-    paths
 }
 
 fn skin_player_file_name_candidates(nickname: &str) -> Vec<String> {

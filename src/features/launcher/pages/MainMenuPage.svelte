@@ -6,6 +6,8 @@
   import SkinStudio from "../components/SkinStudio.svelte";
   import AccountSettingsPanel from "../components/AccountSettingsPanel.svelte";
   import LauncherSettingsPanel from "../components/LauncherSettingsPanel.svelte";
+  import AdminPanel from "../components/AdminPanel.svelte";
+  import { HOME_PROMO_CARDS, type HomePromoCard } from "../models/home-content";
   import {
     checkLauncherUpdate as checkLauncherUpdateCommand,
     downloadAndInstallLauncherUpdate as downloadAndInstallLauncherUpdateCommand,
@@ -24,6 +26,7 @@
     toggleGameRuntime as toggleGameRuntimeCommand,
     updateDiscordPresence as updateDiscordPresenceCommand,
   } from "../services/game-runtime-service";
+  import { openExternalUrl as openExternalUrlCommand } from "../services/external-link-service";
   import {
     attachHoverSounds,
     playLaunchSound,
@@ -45,10 +48,11 @@
     nickname: string;
     emailOrLogin: string;
     skinUrl?: string;
+    role: string;
   };
 
   type MainTab = "home" | "skins" | "modes";
-  type ViewMode = "home" | "account" | "launcher-settings";
+  type ViewMode = "home" | "account" | "launcher-settings" | "admin";
   type ThemeMode = "dark" | "light";
   type BuildItem = {
     id: string;
@@ -84,9 +88,15 @@
   const themeStorageKey = "tbwlauncher-theme";
   const recentModesStorageKey = "tbwlauncher-recent-modes";
   const skinPreviewStorageKey = "tbwlauncher-skin-preview";
+  const launcherUpdateInstalledToastStorageKey =
+    "tbwlauncher-update-installed-toast";
+  const launcherUpdateInstalledToastDurationMs = 5000;
   const accountStatusRequestTimeoutMs = 8000;
   const downloadCancelledErrorCode = "TBW_OPERATION_CANCELLED";
   const updateCheckDebounceMs = 1800;
+  const autoUpdatePeriodicCheckIntervalMs = 10 * 60 * 1000;
+  const maxHomeRecentRows = 3;
+  const homePromoCards: HomePromoCard[] = HOME_PROMO_CARDS;
 
   let activeTab: MainTab = "home";
   let viewMode: ViewMode = "home";
@@ -94,6 +104,8 @@
   let skinPreviewUrl = "";
   let selectedSkinUrl = "";
   let showSignOutConfirm = false;
+  let showPromoNavigationConfirm = false;
+  let promoNavigationUrl = "";
   let runningModeName: string | null = null;
   let openModeRequest: OpenModeRequest | null = null;
   let openModeRequestIdCounter = 0;
@@ -128,9 +140,17 @@
   let launcherUpdatePercent: number | null = null;
   let launcherAutoUpdatesEnabled = true;
   let launcherUpdateHandle: LauncherUpdateHandle | null = null;
-  let scheduledAutoUpdateCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  let scheduledAutoUpdateCheckTimer: ReturnType<typeof setTimeout> | null =
+    null;
+  let periodicAutoUpdateCheckTimer: ReturnType<typeof setInterval> | null =
+    null;
+  let showLauncherUpdateInstalledToast = false;
+  let launcherUpdateInstalledToastText = "Обновление лаунчера установлено.";
+  let launcherUpdateInstalledToastTimer: ReturnType<typeof setTimeout> | null =
+    null;
 
   let recentModes: string[] = [];
+  let homeRecentBuilds: BuildItem[] = [];
 
   let buildNames: string[] = [
     "ARCADE",
@@ -308,11 +328,33 @@
   $: recentBuilds = recentModes
     .map((modeName) => builds.find((build) => build.name === modeName))
     .filter(Boolean) as BuildItem[];
+  $: homeRecentBuilds = (() => {
+    const uniqueBuilds: BuildItem[] = [];
+    const seenBuildIds = new Set<string>();
+
+    for (const build of recentBuilds) {
+      if (seenBuildIds.has(build.id)) {
+        continue;
+      }
+
+      seenBuildIds.add(build.id);
+      uniqueBuilds.push(build);
+
+      if (uniqueBuilds.length >= maxHomeRecentRows) {
+        break;
+      }
+    }
+
+    return uniqueBuilds;
+  })();
   $: if (!selectedSkinUrl && user.skinUrl?.trim()) {
     selectedSkinUrl = user.skinUrl.trim();
   }
 
   $: accountInitials = user.nickname.trim().slice(0, 1).toUpperCase() || "P";
+  $: canAccessAdminPanel =
+    user.role.trim().toLowerCase() === "admin" ||
+    user.role.trim().toLowerCase() === "tech";
 
   onMount(() => {
     const storedTheme = localStorage.getItem(themeStorageKey);
@@ -325,7 +367,7 @@
       try {
         const parsed = JSON.parse(rawRecentModes) as string[];
         if (Array.isArray(parsed)) {
-          recentModes = parsed.slice(0, 3);
+          recentModes = parsed.slice(0, maxHomeRecentRows);
         }
       } catch {
         recentModes = [];
@@ -339,6 +381,7 @@
     selectedSkinUrl = user.skinUrl?.trim() ?? "";
 
     applyTheme(theme);
+    consumeInstalledUpdateToastMarker();
     void refreshRuntimeState();
     void refreshBuildInstallationStates();
     const currentNickname = user.nickname.trim();
@@ -356,9 +399,32 @@
       void refreshBuildInstallationStates();
       void syncDiscordPresence(runningModeName, user.nickname.trim());
     };
+    const handleWindowKeydown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      if (showSignOutConfirm) {
+        event.preventDefault();
+        cancelSignOut();
+        return;
+      }
+
+      if (showPromoNavigationConfirm) {
+        event.preventDefault();
+        dismissPromoNavigationConfirm();
+        return;
+      }
+
+      if (viewMode === "account" || viewMode === "launcher-settings") {
+        event.preventDefault();
+        returnHome();
+      }
+    };
 
     if (typeof window !== "undefined") {
       window.addEventListener("focus", handleWindowFocus);
+      window.addEventListener("keydown", handleWindowKeydown);
     }
 
     runtimeStatePollTimer = setInterval(() => {
@@ -374,18 +440,21 @@
 
       if (typeof window !== "undefined") {
         window.removeEventListener("focus", handleWindowFocus);
+        window.removeEventListener("keydown", handleWindowKeydown);
       }
 
       detachHoverSounds();
       clearLaunchProgressTimers();
-      if (scheduledAutoUpdateCheckTimer) {
-        clearTimeout(scheduledAutoUpdateCheckTimer);
-        scheduledAutoUpdateCheckTimer = null;
-      }
+      clearLauncherAutoUpdateSchedule();
+      clearLauncherUpdateInstalledToastTimer();
     };
   });
 
-  function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+  function withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    errorMessage: string,
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timeoutHandle = setTimeout(() => {
         reject(new Error(errorMessage));
@@ -451,10 +520,76 @@
     launcherUpdatePercent = null;
   }
 
-  function handleLauncherUpdaterProgress(progress: LauncherUpdateDownloadProgress): void {
+  function handleLauncherUpdaterProgress(
+    progress: LauncherUpdateDownloadProgress,
+  ): void {
     launcherUpdateDownloadedBytes = progress.downloadedBytes;
     launcherUpdateTotalBytes = progress.totalBytes;
     launcherUpdatePercent = progress.percent;
+  }
+
+  function clearLauncherUpdateInstalledToastTimer(): void {
+    if (!launcherUpdateInstalledToastTimer) {
+      return;
+    }
+
+    clearTimeout(launcherUpdateInstalledToastTimer);
+    launcherUpdateInstalledToastTimer = null;
+  }
+
+  function showInstalledUpdateToast(version?: string): void {
+    launcherUpdateInstalledToastText = version?.trim()
+      ? `Обновление лаунчера ${version.trim()} установлено.`
+      : "Обновление лаунчера установлено.";
+    showLauncherUpdateInstalledToast = true;
+    clearLauncherUpdateInstalledToastTimer();
+    launcherUpdateInstalledToastTimer = setTimeout(() => {
+      showLauncherUpdateInstalledToast = false;
+      launcherUpdateInstalledToastTimer = null;
+    }, launcherUpdateInstalledToastDurationMs);
+  }
+
+  function persistInstalledUpdateToastMarker(version?: string): void {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const payload = JSON.stringify({
+      version: version?.trim() ?? "",
+      at: Date.now(),
+    });
+    localStorage.setItem(launcherUpdateInstalledToastStorageKey, payload);
+  }
+
+  function consumeInstalledUpdateToastMarker(): void {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const payload = localStorage.getItem(
+      launcherUpdateInstalledToastStorageKey,
+    );
+    if (!payload) {
+      return;
+    }
+
+    localStorage.removeItem(launcherUpdateInstalledToastStorageKey);
+
+    try {
+      const parsed = JSON.parse(payload) as { version?: string; at?: number };
+      const timestamp =
+        typeof parsed.at === "number" && Number.isFinite(parsed.at)
+          ? parsed.at
+          : 0;
+      const ageMs = Date.now() - timestamp;
+      if (timestamp <= 0 || ageMs > 10 * 60 * 1000) {
+        return;
+      }
+
+      showInstalledUpdateToast(parsed.version);
+    } catch {
+      showInstalledUpdateToast();
+    }
   }
 
   async function initializeLauncherAutoUpdateState(): Promise<void> {
@@ -465,18 +600,32 @@
       launcherAutoUpdatesEnabled = true;
     }
 
-    if (!launcherAutoUpdatesEnabled) {
-      return;
-    }
+    scheduleLauncherAutoUpdateChecks();
+  }
 
+  function clearLauncherAutoUpdateSchedule(): void {
     if (scheduledAutoUpdateCheckTimer) {
       clearTimeout(scheduledAutoUpdateCheckTimer);
+      scheduledAutoUpdateCheckTimer = null;
     }
+
+    if (periodicAutoUpdateCheckTimer) {
+      clearInterval(periodicAutoUpdateCheckTimer);
+      periodicAutoUpdateCheckTimer = null;
+    }
+  }
+
+  function scheduleLauncherAutoUpdateChecks(): void {
+    clearLauncherAutoUpdateSchedule();
 
     scheduledAutoUpdateCheckTimer = setTimeout(() => {
       scheduledAutoUpdateCheckTimer = null;
       void checkLauncherUpdates(false);
     }, updateCheckDebounceMs);
+
+    periodicAutoUpdateCheckTimer = setInterval(() => {
+      void checkLauncherUpdates(false);
+    }, autoUpdatePeriodicCheckIntervalMs);
   }
 
   async function checkLauncherUpdates(forceCheck: boolean): Promise<void> {
@@ -484,7 +633,7 @@
       return;
     }
 
-    if (!forceCheck && !launcherAutoUpdatesEnabled) {
+    if (!forceCheck && showLauncherUpdatePrompt) {
       return;
     }
 
@@ -506,6 +655,7 @@
       launcherUpdateBody = update.body?.trim() ?? "";
       showLauncherUpdatePrompt = true;
       resetLauncherUpdateProgress();
+      void installLauncherUpdate();
     } catch (error) {
       console.error("Launcher update check failed:", error);
       const message = formatUpdaterError(error);
@@ -519,12 +669,7 @@
   }
 
   function dismissLauncherUpdatePrompt(): void {
-    if (updateInstallInFlight) {
-      return;
-    }
-
     showLauncherUpdatePrompt = false;
-    launcherUpdateError = "";
   }
 
   async function installLauncherUpdate(): Promise<void> {
@@ -541,6 +686,10 @@
         launcherUpdateHandle,
         handleLauncherUpdaterProgress,
       );
+      persistInstalledUpdateToastMarker(
+        launcherUpdateVersion || launcherUpdateHandle.version,
+      );
+      showLauncherUpdatePrompt = false;
       await restartLauncherCommand();
     } catch (error) {
       console.error("Launcher update install failed:", error);
@@ -594,6 +743,15 @@
     viewMode = "launcher-settings";
   }
 
+  function openAdminPanel(): void {
+    if (!canAccessAdminPanel) {
+      return;
+    }
+
+    void (viewMode === "home" ? playPanelOpenSound() : playSwitchSound());
+    viewMode = "admin";
+  }
+
   function returnHome(): void {
     void playPanelCloseSound();
     viewMode = "home";
@@ -616,14 +774,16 @@
     localStorage.setItem(themeStorageKey, nextTheme);
   }
 
-  function handleLauncherSettingsSaved(settings: { autoUpdates: boolean }): void {
+  function handleLauncherSettingsSaved(settings: {
+    autoUpdates: boolean;
+  }): void {
     launcherAutoUpdatesEnabled = settings.autoUpdates;
-    if (launcherAutoUpdatesEnabled && !showLauncherUpdatePrompt) {
-      void checkLauncherUpdates(false);
-    }
+    scheduleLauncherAutoUpdateChecks();
   }
 
-  async function saveAccountSettings(payload: AccountSavePayload): Promise<string> {
+  async function saveAccountSettings(
+    payload: AccountSavePayload,
+  ): Promise<string> {
     const requestedNickname = payload.nickname.trim();
     const currentPassword = payload.currentPassword;
     const nextPassword = payload.nextPassword;
@@ -637,7 +797,9 @@
 
     if (hasPasswordChange) {
       if (!currentPassword || !nextPassword) {
-        throw new Error("Для смены пароля заполните поля текущего и нового пароля.");
+        throw new Error(
+          "Для смены пароля заполните поля текущего и нового пароля.",
+        );
       }
 
       await changePassword(
@@ -828,7 +990,10 @@
 
     if (error && typeof error === "object") {
       const message = (error as { message?: unknown }).message;
-      if (typeof message === "string" && message.includes(downloadCancelledErrorCode)) {
+      if (
+        typeof message === "string" &&
+        message.includes(downloadCancelledErrorCode)
+      ) {
         return true;
       }
     }
@@ -1027,6 +1192,12 @@
     };
   }
 
+  function buildRecentModeTooltip(mode: BuildItem): string {
+    const loader = mode.loader ?? "Forge";
+    const version = mode.gameVersion ?? "1.20.1";
+    return `${mode.name} • ${loader} ${version}`;
+  }
+
   async function toggleModeRuntime(modeName: string): Promise<void> {
     if (launchInFlight) {
       return;
@@ -1049,6 +1220,7 @@
     try {
       const runtimeState = await toggleGameRuntimeCommand(
         modeName,
+        user.id,
         user.nickname,
         build?.gameVersion,
         launchSkinUrl,
@@ -1126,7 +1298,7 @@
     recentModes = [
       modeName,
       ...recentModes.filter((item) => item !== modeName),
-    ].slice(0, 3);
+    ].slice(0, maxHomeRecentRows);
     localStorage.setItem(recentModesStorageKey, JSON.stringify(recentModes));
   }
 
@@ -1137,6 +1309,55 @@
     }
 
     return `/assets/${fileName}`;
+  }
+
+  function resolveCardImageUrl(imageFile: string): string {
+    const normalized = imageFile.trim();
+    if (
+      normalized.toLowerCase().startsWith("https://") ||
+      normalized.toLowerCase().startsWith("http://")
+    ) {
+      return normalized;
+    }
+
+    return resolveAssetUrl(normalized);
+  }
+
+  function requestPromoCardNavigation(card: HomePromoCard): void {
+    const url = card.linkUrl.trim();
+    if (!url) {
+      return;
+    }
+
+    promoNavigationUrl = url;
+    showPromoNavigationConfirm = true;
+    void playPanelOpenSound();
+  }
+
+  function dismissPromoNavigationConfirm(): void {
+    showPromoNavigationConfirm = false;
+    promoNavigationUrl = "";
+    void playPanelCloseSound();
+  }
+
+  async function confirmPromoNavigation(): Promise<void> {
+    const url = promoNavigationUrl.trim();
+    showPromoNavigationConfirm = false;
+    promoNavigationUrl = "";
+    void playPanelCloseSound();
+
+    if (!url) {
+      return;
+    }
+
+    try {
+      await openExternalUrlCommand(url);
+    } catch (error) {
+      console.error("Failed to open promo link:", error);
+      if (typeof window !== "undefined") {
+        window.alert("Не удалось открыть ссылку. Проверь адрес в карточке.");
+      }
+    }
   }
 
   function requestSignOut(): void {
@@ -1206,7 +1427,42 @@
             <rect x="4" y="15" width="16" height="4" rx="1" />
           </svg>
         </button>
+
+        <div class="nav-divider" aria-hidden="true"></div>
+
+        {#if homeRecentBuilds.length > 0}
+          {#each homeRecentBuilds as mode (mode.id)}
+            <button
+              type="button"
+              class="nav-button nav-button-recent"
+              on:click={() => openModeFromRecent(mode.name)}
+              aria-label={buildRecentModeTooltip(mode)}
+              title={buildRecentModeTooltip(mode)}
+            >
+              <img
+                src={resolveAssetUrl(mode.imageFile)}
+                alt={`Режим ${mode.name}`}
+                class="nav-recent-image"
+              />
+            </button>
+          {/each}
+        {/if}
       </div>
+
+      {#if canAccessAdminPanel}
+        <button
+          type="button"
+          class="nav-admin"
+          on:click={openAdminPanel}
+          aria-label="Админ-панель"
+          title="Админ-панель"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3l7 3v5c0 4.2-2.7 7.9-7 10-4.3-2.1-7-5.8-7-10V6z" />
+            <path d="M9.5 12l1.7 1.7L14.8 10" />
+          </svg>
+        </button>
+      {/if}
 
       <button
         class="nav-exit"
@@ -1286,41 +1542,45 @@
             out:fade={{ duration: 120 }}
           >
             {#if activeTab === "home"}
-              <section class="tab-placeholder recent-panel">
-                <h2>Недавно запущенные режимы</h2>
-                {#if recentModes.length === 0}
-                  <p>Вы еще не запускали ни одной сборки</p>
-                {:else}
-                  <div class="recent-list">
-                    {#each recentBuilds as mode (mode.id)}
-                      <div
-                        class="recent-item"
-                        role="button"
-                        tabindex="0"
-                        aria-label={`Открыть режим ${mode.name}`}
-                        on:click={() => openModeFromRecent(mode.name)}
-                        on:keydown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            openModeFromRecent(mode.name);
-                          }
-                        }}
-                      >
-                        <div class="recent-thumb-wrap">
-                          <img
-                            src={resolveAssetUrl(mode.imageFile)}
-                            alt={`Изображение режима ${mode.name}`}
-                          />
-                        </div>
-                        <h3>{mode.name}</h3>
-                        <div class="recent-meta-row">
-                          <p>
-                            {mode.loader ?? "Forge"}
-                            {mode.gameVersion ?? "1.20.1"}
-                          </p>
+              <section class="tab-placeholder home-panel">
+                <section class="home-block recent-block">
+                  <h2>Недавно запущенные режимы</h2>
+                  {#if homeRecentBuilds.length === 0}
+                    <p>Список режимов пока пуст.</p>
+                  {:else}
+                    <div class="recent-rows">
+                      {#each homeRecentBuilds as mode (mode.id)}
+                        <div
+                          class="recent-row"
+                          role="button"
+                          tabindex="0"
+                          aria-label={`Открыть режим ${mode.name}`}
+                          on:click={() => openModeFromRecent(mode.name)}
+                          on:keydown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openModeFromRecent(mode.name);
+                            }
+                          }}
+                        >
+                          <div class="recent-row-main">
+                            <div class="recent-row-icon">
+                              <img
+                                src={resolveAssetUrl(mode.imageFile)}
+                                alt={`Иконка режима ${mode.name}`}
+                              />
+                            </div>
+                            <div class="recent-row-text">
+                              <h3>{mode.name}</h3>
+                              <p>
+                                {mode.loader ?? "Forge"} · {mode.gameVersion ??
+                                  "1.20.1"}
+                              </p>
+                            </div>
+                          </div>
                           <button
                             type="button"
-                            class="recent-launch-btn"
+                            class="recent-row-launch"
                             class:running={runningModeName === mode.name}
                             disabled={launchInFlight}
                             on:click|stopPropagation={() =>
@@ -1335,21 +1595,50 @@
                                 Установка...
                               {/if}
                             {:else if runningModeName === mode.name}
-                              Закрыть игру
+                              Закрыть
                             {:else if mode.updateAvailable}
                               Обновить
                             {:else if !mode.installed}
                               Установить
                             {:else}
-                              Запустить
+                              Запуск
                             {/if}
                           </button>
                         </div>
-                      </div>
+                      {/each}
+                    </div>
+                  {/if}
+                </section>
+
+                <section class="home-block promo-block">
+                  <div class="promo-grid">
+                    {#each homePromoCards as card (card.id)}
+                      <a
+                        class="promo-card"
+                        href={card.linkUrl}
+                        target={card.openInNewWindow ? "_blank" : "_self"}
+                        rel={card.openInNewWindow
+                          ? "noopener noreferrer"
+                          : undefined}
+                        aria-label={`Открыть: ${card.title}`}
+                        on:click|preventDefault={() =>
+                          requestPromoCardNavigation(card)}
+                      >
+                        <div class="promo-image-wrap">
+                          <img
+                            src={resolveCardImageUrl(card.imageFile)}
+                            alt={card.imageAlt}
+                            loading="lazy"
+                          />
+                        </div>
+                        <div class="promo-card-body">
+                          <h3>{card.title}</h3>
+                          <p>{card.description}</p>
+                        </div>
+                      </a>
                     {/each}
                   </div>
-                {/if}
-                <div class="recent-reserved-space" aria-hidden="true"></div>
+                </section>
               </section>
             {:else if activeTab === "skins"}
               <SkinStudio
@@ -1408,6 +1697,13 @@
             changeStatus={accountChangeStatus}
             statusLoading={accountChangeStatusLoading}
           />
+        {:else if viewMode === "admin"}
+          <AdminPanel
+            actorUserId={user.id}
+            actorIdentity={user.emailOrLogin}
+            actorRole={user.role}
+            onBack={returnHome}
+          />
         {:else}
           <LauncherSettingsPanel
             {theme}
@@ -1415,7 +1711,7 @@
             onThemeChange={updateTheme}
             onSaved={handleLauncherSettingsSaved}
             onCheckUpdates={requestManualLauncherUpdateCheck}
-            updateCheckInFlight={updateCheckInFlight}
+            {updateCheckInFlight}
           />
         {/if}
       </section>
@@ -1437,9 +1733,18 @@
         in:fly={{ y: 20, duration: 180, easing: cubicOut }}
         out:fade={{ duration: 120 }}
       >
-        <p class="update-confirm-title">Доступно обновление лаунчера</p>
-        <p>Текущая версия: {launcherCurrentVersion || "неизвестно"}</p>
-        <p>Новая версия: {launcherUpdateVersion}</p>
+        <p class="update-confirm-title">Найдено новое обновление лаунчера</p>
+        <p>
+          Доступна версия <strong>{launcherUpdateVersion}</strong>
+          {#if launcherCurrentVersion}
+            (сейчас установлена <strong>{launcherCurrentVersion}</strong>)
+          {/if}
+          .
+        </p>
+        <p>
+          Загрузка началась автоматически. После установки лаунчер
+          перезапустится.
+        </p>
 
         {#if launcherUpdateBody}
           <pre class="update-notes">{launcherUpdateBody}</pre>
@@ -1448,14 +1753,14 @@
         {#if updateInstallInFlight}
           <p class="update-progress">
             {#if launcherUpdatePercent !== null}
-              Установка обновления... {launcherUpdatePercent}% ({formatCompactBytes(
+              Загружаем обновление... {launcherUpdatePercent}% ({formatCompactBytes(
                 launcherUpdateDownloadedBytes,
               )}
               {#if launcherUpdateTotalBytes !== null}
                 / {formatCompactBytes(launcherUpdateTotalBytes)}
               {/if})
             {:else}
-              Установка обновления... {formatCompactBytes(
+              Загружаем обновление... {formatCompactBytes(
                 launcherUpdateDownloadedBytes,
               )}
             {/if}
@@ -1469,20 +1774,67 @@
         <div class="confirm-actions">
           <button
             type="button"
-            class="confirm-cancel"
+            class="confirm-ack"
             on:click={dismissLauncherUpdatePrompt}
-            disabled={updateInstallInFlight}
           >
-            Позже
+            Ок
           </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if showLauncherUpdateInstalledToast}
+    <div
+      class="update-installed-toast"
+      role="status"
+      aria-live="polite"
+      in:fly={{ y: -18, duration: 260, easing: cubicOut }}
+      out:fade={{ duration: 220 }}
+    >
+      {launcherUpdateInstalledToastText}
+    </div>
+  {/if}
+
+  {#if showPromoNavigationConfirm}
+    <div
+      class="confirm-backdrop"
+      role="presentation"
+      in:fade={{ duration: 120 }}
+      out:fade={{ duration: 100 }}
+    >
+      <div
+        class="confirm-panel promo-navigation-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Подтверждение перехода по внешней ссылке"
+        in:fly={{ y: 20, duration: 180, easing: cubicOut }}
+        out:fade={{ duration: 120 }}
+      >
+        <button
+          type="button"
+          class="promo-navigation-close"
+          aria-label="Закрыть"
+          on:click={dismissPromoNavigationConfirm}
+        >
+          ×
+        </button>
+        <h3 class="promo-navigation-title">Вы покидаете TBW Launcher</h3>
+        <p class="promo-navigation-subtitle">
+          Эта ссылка приведёт вас на следующий сайт
+        </p>
+        <div class="promo-navigation-url-box">{promoNavigationUrl}</div>
+        <div class="promo-navigation-actions">
           <button
             type="button"
-            class="confirm-submit"
-            on:click={installLauncherUpdate}
-            disabled={updateInstallInFlight}
+            class="promo-navigation-back"
+            on:click={dismissPromoNavigationConfirm}>Вернуться</button
           >
-            {updateInstallInFlight ? "Установка..." : "Обновить сейчас"}
-          </button>
+          <button
+            type="button"
+            class="promo-navigation-visit"
+            on:click={confirmPromoNavigation}>Посетить сайт</button
+          >
         </div>
       </div>
     </div>
@@ -1567,6 +1919,15 @@
     gap: 8px;
   }
 
+  .nav-divider {
+    width: 76%;
+    justify-self: center;
+    height: 1px;
+    margin: 4px 0 2px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--line) 78%, var(--accent) 22%);
+  }
+
   .nav-button {
     width: 90%;
     justify-self: center;
@@ -1593,6 +1954,18 @@
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
+  }
+
+  .nav-button-recent {
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .nav-recent-image {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
   }
 
   .nav-button.active {
@@ -1642,6 +2015,38 @@
     transform: translateX(-50%) scale(0.96);
   }
 
+  .nav-admin {
+    position: absolute;
+    left: 50%;
+    bottom: 66px;
+    transform: translateX(-50%);
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    border: 1px solid rgba(105, 199, 154, 0.55);
+    background: rgba(71, 172, 136, 0.12);
+    color: #8fe8c3;
+    display: inline-grid;
+    place-items: center;
+    cursor: pointer;
+    transition:
+      transform 0.16s ease,
+      border-color 0.16s ease,
+      box-shadow 0.16s ease,
+      background-color 0.16s ease;
+  }
+
+  .nav-admin:hover {
+    transform: translateX(-50%) scale(1.045);
+    border-color: rgba(132, 232, 186, 0.92);
+    box-shadow: 0 0 0 1px rgba(112, 216, 171, 0.34);
+    background: rgba(71, 172, 136, 0.21);
+  }
+
+  .nav-admin:active {
+    transform: translateX(-50%) scale(0.96);
+  }
+
   button:not(.overlay-dismiss):hover {
     filter: brightness(1.07);
   }
@@ -1665,6 +2070,16 @@
   .nav-exit svg {
     width: 24px;
     height: 24px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .nav-admin svg {
+    width: 23px;
+    height: 23px;
     stroke: currentColor;
     fill: none;
     stroke-width: 2;
@@ -1762,7 +2177,10 @@
     font-size: 0.8rem;
     font-weight: 700;
     cursor: pointer;
-    transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
+    transition:
+      background 0.14s ease,
+      border-color 0.14s ease,
+      transform 0.14s ease;
   }
 
   .launch-progress-cancel:hover:not(:disabled) {
@@ -1890,18 +2308,42 @@
     padding: 16px;
   }
 
-  .recent-panel {
+  .home-panel {
     min-height: 0;
+    height: 100%;
+    overflow: auto;
+    display: grid;
+    align-content: start;
+    gap: 18px;
     padding-top: 10px;
-    padding-bottom: 5px;
+    padding-bottom: 10px;
+  }
+
+  .home-panel::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .home-panel::-webkit-scrollbar-track {
+    background: color-mix(in srgb, var(--surface-alt) 84%, transparent);
+    border-radius: 999px;
+  }
+
+  .home-panel::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--line) 80%, var(--accent) 20%);
+    border-radius: 999px;
+  }
+
+  .home-panel::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--accent) 46%, var(--line) 54%);
   }
 
   .tab-placeholder h2 {
     margin: 0 0 0;
   }
 
-  .recent-panel h2 {
-    margin-top: -2px;
+  .home-block {
+    display: grid;
+    gap: 10px;
   }
 
   .tab-placeholder p {
@@ -1909,85 +2351,93 @@
     color: var(--text-muted);
   }
 
-  .recent-list {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-    margin-top: 6px;
+  .home-block h2 {
+    margin-top: -2px;
   }
 
-  .recent-item {
+  .recent-rows {
+    display: grid;
+    gap: 10px;
+    margin-top: 2px;
+  }
+
+  .recent-row {
     border: 1px solid var(--line);
     background: var(--surface-main);
     border-radius: 10px;
-    padding: 7px 7px 6px;
+    padding: 10px 12px;
     color: var(--text-main);
-    display: grid;
-    gap: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     min-width: 0;
     cursor: pointer;
     transition:
-      transform 0.16s ease,
+      transform 0.14s ease,
       border-color 0.16s ease,
       box-shadow 0.16s ease,
       background-color 0.16s ease;
   }
 
-  .recent-item:hover {
-    transform: scale(1.02);
+  .recent-row:hover {
+    transform: translateY(-1px);
     border-color: var(--accent);
     background: var(--surface-elevated);
-    box-shadow: 0 10px 20px rgba(9, 16, 26, 0.24);
+    box-shadow: 0 8px 18px rgba(9, 16, 26, 0.2);
   }
 
-  .recent-item:focus-visible {
+  .recent-row:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
     outline-offset: 2px;
   }
 
-  .recent-item:active {
-    transform: scale(0.99);
+  .recent-row:active {
+    transform: translateY(0);
   }
 
-  .recent-thumb-wrap {
-    width: 100%;
-    aspect-ratio: 16 / 9;
+  .recent-row-main {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .recent-row-icon {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 auto;
     border-radius: 8px;
     overflow: hidden;
     border: 1px solid var(--line);
     background: var(--surface-alt);
   }
 
-  .recent-thumb-wrap img {
+  .recent-row-icon img {
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
   }
 
-  .recent-item h3 {
+  .recent-row-text {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+
+  .recent-row-text h3 {
     margin: 0;
-    margin-top: 6px;
-    margin-bottom: -1px;
-    font-size: 0.82rem;
+    font-size: 0.92rem;
     line-height: 1.2;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .recent-meta-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-    margin-top: 0;
-  }
-
-  .recent-item p {
+  .recent-row-text p {
     margin: 0;
-    margin-top: 2px;
-    font-size: 0.74rem;
+    font-size: 0.76rem;
     color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1995,9 +2445,9 @@
     min-width: 0;
   }
 
-  .recent-launch-btn {
+  .recent-row-launch {
     flex: 0 0 auto;
-    width: 124px;
+    min-width: 112px;
     display: inline-flex;
     justify-content: center;
     align-items: center;
@@ -2005,7 +2455,7 @@
     border-radius: 7px;
     padding: 5px 8px;
     font: inherit;
-    font-size: 0.74rem;
+    font-size: 0.75rem;
     font-weight: 700;
     color: #0b1422;
     background: linear-gradient(135deg, #9ef7ce, #84bffb);
@@ -2016,23 +2466,23 @@
       filter 0.14s ease;
   }
 
-  .recent-launch-btn:hover {
+  .recent-row-launch:hover {
     transform: translateY(-1px);
     box-shadow: 0 3px 10px rgba(72, 191, 180, 0.28);
     filter: brightness(1.05);
   }
 
-  .recent-launch-btn.running {
+  .recent-row-launch.running {
     color: #ffeaea;
     background: linear-gradient(135deg, #eb5d5d, #b92020);
     box-shadow: 0 4px 12px rgba(168, 38, 38, 0.28);
   }
 
-  .recent-launch-btn.running:hover {
+  .recent-row-launch.running:hover {
     box-shadow: 0 4px 12px rgba(168, 38, 38, 0.38);
   }
 
-  .recent-launch-btn:disabled {
+  .recent-row-launch:disabled {
     cursor: wait;
     transform: none;
     filter: none;
@@ -2040,8 +2490,72 @@
     opacity: 0.86;
   }
 
-  .recent-reserved-space {
-    min-height: 0;
+  .promo-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .promo-card {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface-main);
+    text-decoration: none;
+    color: var(--text-main);
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    transition:
+      transform 0.16s ease,
+      border-color 0.16s ease,
+      box-shadow 0.16s ease,
+      background-color 0.16s ease;
+  }
+
+  .promo-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--accent);
+    box-shadow: 0 14px 24px rgba(9, 16, 26, 0.26);
+    background: var(--surface-elevated);
+  }
+
+  .promo-card:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+    outline-offset: 2px;
+  }
+
+  .promo-image-wrap {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-alt);
+    overflow: hidden;
+  }
+
+  .promo-image-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .promo-card-body {
+    padding: 10px 11px 12px;
+    display: grid;
+    gap: 6px;
+  }
+
+  .promo-card-body h3 {
+    margin: 0;
+    font-size: 0.92rem;
+    line-height: 1.25;
+  }
+
+  .promo-card-body p {
+    margin: 0;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    color: var(--text-muted);
   }
 
   .overlay-backdrop {
@@ -2103,6 +2617,15 @@
     width: min(560px, 94vw);
   }
 
+  .promo-navigation-panel {
+    width: min(560px, 94vw);
+    position: relative;
+    border-color: color-mix(in srgb, var(--line-strong) 82%, var(--accent) 18%);
+    background: color-mix(in srgb, var(--surface-main) 86%, var(--background-main) 14%);
+    padding: 18px;
+    gap: 12px;
+  }
+
   @keyframes signout-pop-in {
     from {
       opacity: 0;
@@ -2123,6 +2646,100 @@
   .update-confirm-title {
     font-size: 1.05rem;
     font-weight: 700;
+  }
+
+  .promo-navigation-title {
+    margin: 0;
+    color: var(--text-main);
+    font-size: 1.85rem;
+    font-weight: 800;
+    line-height: 1.2;
+    padding-right: 32px;
+  }
+
+  .promo-navigation-subtitle {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    line-height: 1.35;
+  }
+
+  .promo-navigation-url-box {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--surface-alt) 82%, var(--background-main) 18%);
+    color: var(--text-main);
+    padding: 12px 14px;
+    font-family: "Consolas", "Menlo", "Monaco", monospace;
+    font-size: 0.92rem;
+    line-height: 1.35;
+    word-break: break-word;
+  }
+
+  .promo-navigation-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 1.35rem;
+    line-height: 1;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+  }
+
+  .promo-navigation-close:hover {
+    background: color-mix(in srgb, var(--line) 42%, transparent);
+    color: var(--text-main);
+  }
+
+  .promo-navigation-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 4px;
+  }
+
+  .promo-navigation-back,
+  .promo-navigation-visit {
+    border: none;
+    border-radius: 10px;
+    min-height: 42px;
+    font: inherit;
+    font-size: 0.98rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition:
+      filter 0.14s ease,
+      transform 0.14s ease,
+      box-shadow 0.14s ease;
+  }
+
+  .promo-navigation-back {
+    background: color-mix(in srgb, var(--surface-alt) 74%, var(--background-main) 26%);
+    color: var(--text-main);
+    border: 1px solid var(--line-strong);
+  }
+
+  .promo-navigation-visit {
+    background: linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent) 66%, #6ea8ff 34%),
+      color-mix(in srgb, var(--accent-soft) 70%, #4f67f2 30%)
+    );
+    color: #f6f8ff;
+    border: 1px solid color-mix(in srgb, var(--accent) 72%, var(--line-strong) 28%);
+  }
+
+  .promo-navigation-back:hover,
+  .promo-navigation-visit:hover {
+    filter: brightness(1.06);
+    transform: translateY(-1px);
   }
 
   .update-notes {
@@ -2151,6 +2768,41 @@
     font-size: 0.9rem;
   }
 
+  .update-installed-toast {
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 7;
+    max-width: min(560px, calc(100vw - 24px));
+    border-radius: 12px;
+    border: 1px solid color-mix(in srgb, var(--accent) 58%, #ffffff 12%);
+    background: color-mix(in srgb, var(--surface-main) 80%, #0f2b1f 20%);
+    color: #ddffe8;
+    font-size: 0.9rem;
+    font-weight: 600;
+    line-height: 1.35;
+    padding: 10px 14px;
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent),
+      0 10px 24px rgba(0, 0, 0, 0.34);
+    animation: update-toast-breathe 1.6s ease-in-out infinite;
+  }
+
+  @keyframes update-toast-breathe {
+    0%,
+    100% {
+      box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent),
+        0 10px 24px rgba(0, 0, 0, 0.34);
+    }
+    50% {
+      box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent),
+        0 12px 28px rgba(0, 0, 0, 0.4);
+    }
+  }
+
   .confirm-actions {
     display: flex;
     justify-content: flex-end;
@@ -2158,7 +2810,8 @@
   }
 
   .confirm-cancel,
-  .confirm-submit {
+  .confirm-submit,
+  .confirm-ack {
     border-radius: 10px;
     padding: 8px 12px;
     font: inherit;
@@ -2177,9 +2830,16 @@
   }
 
   .confirm-submit {
-    border: 1px solid rgba(255, 82, 82, 0.55);
-    background: rgba(255, 56, 56, 0.16);
-    color: #ff7070;
+    border: 1px solid rgba(48, 198, 116, 0.55);
+    background: rgba(56, 255, 116, 0.16);
+    color: #48d77a;
+  }
+
+  .confirm-ack {
+    border: 1px solid rgba(89, 201, 132, 0.72);
+    background: linear-gradient(135deg, #9ef7ce, #59c984);
+    color: #062413;
+    font-weight: 700;
   }
 
   .confirm-cancel:hover {
@@ -2189,14 +2849,22 @@
   }
 
   .confirm-submit:hover {
-    border-color: rgba(255, 100, 100, 0.92);
-    box-shadow: 0 0 0 1px rgba(255, 82, 82, 0.32);
-    background: rgba(255, 56, 56, 0.24);
+    border-color: rgba(29, 255, 100, 0.92);
+    box-shadow: 0 0 0 1px rgba(61, 255, 181, 0.32);
+    background: rgba(58, 255, 110, 0.24);
+    transform: translateY(-1px);
+  }
+
+  .confirm-ack:hover {
+    border-color: rgba(133, 240, 174, 0.92);
+    box-shadow: 0 0 0 1px rgba(89, 201, 132, 0.35);
+    filter: brightness(1.03);
     transform: translateY(-1px);
   }
 
   .confirm-cancel:disabled,
-  .confirm-submit:disabled {
+  .confirm-submit:disabled,
+  .confirm-ack:disabled {
     opacity: 0.65;
     cursor: default;
     transform: none;
@@ -2222,6 +2890,44 @@
 
     .profile-chip {
       align-self: flex-end;
+    }
+
+    .home-panel {
+      gap: 14px;
+    }
+
+    .recent-row {
+      padding: 9px 10px;
+    }
+
+    .recent-row-icon {
+      width: 40px;
+      height: 40px;
+    }
+
+    .recent-row-launch {
+      min-width: 96px;
+      padding: 5px 7px;
+      font-size: 0.72rem;
+    }
+
+    .promo-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .promo-navigation-title {
+      font-size: 1.55rem;
+    }
+
+    .promo-navigation-actions {
+      grid-template-columns: 1fr;
+    }
+
+    .update-installed-toast {
+      top: 10px;
+      border-radius: 10px;
+      padding: 9px 12px;
+      font-size: 0.85rem;
     }
   }
 </style>

@@ -849,7 +849,9 @@
   }
 
   .skin-card {
-    width: min(100%, 220px);
+    width: 100%;
+    max-width: 220px;
+    min-width: 0;
     justify-self: center;
     min-height: clamp(146px, 22vh, 188px);
     border-radius: 16px;
@@ -907,6 +909,7 @@
     align-content: start;
     gap: 10px;
     overflow: hidden;
+    min-width: 0;
   }
 
   .saved-skin-card.selected {
@@ -942,9 +945,19 @@
     color: var(--text-main);
     font-size: 0.86rem;
     font-weight: 700;
+    min-width: 0;
+  }
+
+  .skin-card-footer span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .skin-card-footer small {
+    flex-shrink: 0;
     color: var(--text-muted);
     font-size: 0.74rem;
     text-transform: uppercase;

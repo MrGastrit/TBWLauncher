@@ -1,6 +1,6 @@
 use crate::auth::models::{
-    AccountChangeStatus, AuthResult, ChangePasswordPayload, LoginPayload, RegisterPayload,
-    UpdateAccountPayload,
+    AccountChangeStatus, AdminUserSummary, AuthResult, ChangePasswordPayload, LoginPayload,
+    RegisterPayload, UpdateAccountPayload,
 };
 use crate::auth::service;
 use crate::AppState;
@@ -95,4 +95,54 @@ pub async fn set_skin_url(
     service::set_skin_url(&state.pool, user_id, identity, skin_url)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn admin_list_users(
+    state: tauri::State<'_, AppState>,
+    actor_user_id: Option<String>,
+    actor_identity: Option<String>,
+    search: Option<String>,
+) -> Result<Vec<AdminUserSummary>, String> {
+    service::admin_list_users(&state.pool, actor_user_id, actor_identity, search)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn admin_set_user_role(
+    state: tauri::State<'_, AppState>,
+    actor_user_id: Option<String>,
+    actor_identity: Option<String>,
+    target_nickname: String,
+    role: String,
+) -> Result<(), String> {
+    service::admin_set_user_role(
+        &state.pool,
+        actor_user_id,
+        actor_identity,
+        target_nickname,
+        role,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn admin_set_user_banned(
+    state: tauri::State<'_, AppState>,
+    actor_user_id: Option<String>,
+    actor_identity: Option<String>,
+    target_nickname: String,
+    banned: bool,
+) -> Result<(), String> {
+    service::admin_set_user_banned(
+        &state.pool,
+        actor_user_id,
+        actor_identity,
+        target_nickname,
+        banned,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }

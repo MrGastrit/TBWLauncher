@@ -1,0 +1,15 @@
+{
+    "version":  "1.1.1",
+    "notes":  "TBW Launcher update",
+    "pub_date":  "2026-03-22T14:30:18.2938825Z",
+    "platforms":  {
+                      "windows-x86_64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTZUpxcVVTN3lvMjZrRmczRjZUNHRVWWJZem4wN1IxYm1acjh1NnZESVFsU0o1Wnl2MTJuSU9YU1N3K3hrcHludTYxeFZBRnVlLzg2QzdhVXQ0VUF6b0hFN3h1SS9LdXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0MTg5ODE3CWZpbGU6dGJ3bGF1bmNoZXJfMS4xLjFfeDY0LXNldHVwLmV4ZQpmUDZncWxhMkdDMUxxZSs1dDd3UjNVZFBWWlhqSjJtNmVES0xuRE1FN2c0bVorYkF2VzNkZThYWFBGSWU0Yk9JMnNQd3A2aWVYWTRxK3VNUnpYZUFEUT09Cg==",
+                                             "url":  "http://144.31.73.2/updates/tbwlauncher_1.1.1_x64-setup.exe"
+                                         },
+                      "windows-x86_64-nsis":  {
+                                                  "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTZUpxcVVTN3lvMjZrRmczRjZUNHRVWWJZem4wN1IxYm1acjh1NnZESVFsU0o1Wnl2MTJuSU9YU1N3K3hrcHludTYxeFZBRnVlLzg2QzdhVXQ0VUF6b0hFN3h1SS9LdXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0MTg5ODE3CWZpbGU6dGJ3bGF1bmNoZXJfMS4xLjFfeDY0LXNldHVwLmV4ZQpmUDZncWxhMkdDMUxxZSs1dDd3UjNVZFBWWlhqSjJtNmVES0xuRE1FN2c0bVorYkF2VzNkZThYWFBGSWU0Yk9JMnNQd3A2aWVYWTRxK3VNUnpYZUFEUT09Cg==",
+                                                  "url":  "http://144.31.73.2/updates/tbwlauncher_1.1.1_x64-setup.exe"
+                                              }
+                  }
+}

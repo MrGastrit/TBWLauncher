@@ -2,7 +2,7 @@
   import { flip } from "svelte/animate";
   import { cubicOut } from "svelte/easing";
   import { fade, fly, scale } from "svelte/transition";
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onMount } from "svelte";
   import { playClickSound, playSwitchSound } from "../services/ui-sound";
 
   type BuildItem = {
@@ -117,6 +117,11 @@
   function closeModeDetails(): void {
     void playSwitchSound();
     selectedBuildId = null;
+  }
+
+  function closeModeDetailsToAllModes(): void {
+    modeScope = "all";
+    closeModeDetails();
   }
 
   function setModeScope(nextScope: "all" | "installed"): void {
@@ -290,6 +295,27 @@
 
     return dp[a.length][b.length];
   }
+
+  onMount(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || !selectedBuildId) {
+        return;
+      }
+
+      event.preventDefault();
+      closeModeDetailsToAllModes();
+    };
+
+    window.addEventListener("keydown", handleEscape);
+
+    return () => {
+      window.removeEventListener("keydown", handleEscape);
+    };
+  });
 </script>
 
 <section class="modes-page" aria-label="Список режимов">
