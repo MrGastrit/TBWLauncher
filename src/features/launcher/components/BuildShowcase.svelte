@@ -39,6 +39,7 @@
   const dispatch = createEventDispatcher<{
     install: { modeName: string };
     launch: { modeName: string };
+    openrequestconsumed: void;
   }>();
 
   let modeScope: "all" | "installed" = "all";
@@ -64,6 +65,7 @@
   $: if (openModeRequest && openModeRequest.id !== lastOpenModeRequestId) {
     selectedBuildId = openModeRequest.buildId;
     lastOpenModeRequestId = openModeRequest.id;
+    dispatch("openrequestconsumed");
   }
 
   $: filterLabelById = Object.fromEntries(

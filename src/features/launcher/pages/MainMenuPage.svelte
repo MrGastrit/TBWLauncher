@@ -1192,6 +1192,10 @@
     };
   }
 
+  function handleOpenModeRequestConsumed(): void {
+    openModeRequest = null;
+  }
+
   function buildRecentModeTooltip(mode: BuildItem): string {
     const loader = mode.loader ?? "Forge";
     const version = mode.gameVersion ?? "1.20.1";
@@ -1661,6 +1665,7 @@
                 {openModeRequest}
                 on:install={handleModeInstall}
                 on:launch={handleModeLaunch}
+                on:openrequestconsumed={handleOpenModeRequestConsumed}
               />
             {/if}
           </div>

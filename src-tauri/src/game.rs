@@ -4593,7 +4593,7 @@ fn split_command_line(input: &str) -> Result<Vec<String>, String> {
     }
 
     if active_quote.is_some() {
-        return Err("Параметры Java содержат незакрытую кавычку.".to_string());
+        return Err("JAVA params contain an err".to_string());
     }
 
     if !current.is_empty() {
@@ -4664,7 +4664,7 @@ fn stop_process_tree(pid: u32) -> Result<(), String> {
     command
         .status()
         .map(|_| ())
-        .map_err(|error| format!("Не удалось завершить игровой процесс: {error}"))
+        .map_err(|error| format!("Не удалось закрыть игру: {error}"))
 }
 
 fn configure_process_spawn(command: &mut Command, show_logs: bool) {
@@ -4733,5 +4733,5 @@ pub(crate) fn find_tbw_root() -> Result<PathBuf, String> {
         }
     }
 
-    Err("Не удалось определить папку .tbw для лаунчера.".to_string())
+    Err("Не удалось определить папку .tbw".to_string())
 }

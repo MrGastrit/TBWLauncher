@@ -473,6 +473,16 @@
     persistSelectedSkinId(skinId);
   }
 
+  function setSelectedArmType(nextArmType: ArmType): void {
+    if (!selectedSkin || selectedSkin.armType === nextArmType) {
+      return;
+    }
+
+    savedSkins = savedSkins.map((skin) =>
+      skin.id === selectedSkin.id ? { ...skin, armType: nextArmType } : skin,
+    );
+  }
+
   function isDefaultSkin(skin: SavedSkin): boolean {
     return skin.id.startsWith("default-");
   }
@@ -699,9 +709,27 @@
     <div class="skin-preview-head">
       <h3>Предпросмотр</h3>
       {#if selectedSkin}
-        <span class="skin-arm-chip">
-          {selectedSkin.armType === "slim" ? "Slim arms" : "Wide arms"}
-        </span>
+        <div class="skin-arm-controls">
+          <span class="skin-arm-chip">
+            {selectedSkin.armType === "slim" ? "Slim arms" : "Wide arms"}
+          </span>
+          <div class="skin-arm-toggle" role="group" aria-label="Тип рук скина">
+            <button
+              type="button"
+              class:active={selectedSkin.armType === "wide"}
+              on:click={() => setSelectedArmType("wide")}
+            >
+              Wide
+            </button>
+            <button
+              type="button"
+              class:active={selectedSkin.armType === "slim"}
+              on:click={() => setSelectedArmType("slim")}
+            >
+              Slim
+            </button>
+          </div>
+        </div>
       {/if}
     </div>
 
@@ -718,7 +746,9 @@
       {/if}
     </div>
 
-    <div class="skin-preview-meta">Зажми и потяни, чтобы вращать модель</div>
+    <div class="skin-preview-meta">
+      Зажми и потяни, чтобы вращать модель. Тип рук определяется автоматически при загрузке, но можно переключить вручную.
+    </div>
   </aside>
 </section>
 
@@ -974,9 +1004,18 @@
 
   .skin-preview-head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .skin-arm-controls {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
   }
 
   .skin-arm-chip {
@@ -991,6 +1030,44 @@
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+  }
+
+  .skin-arm-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px;
+    background: color-mix(in srgb, var(--surface-elevated) 72%, transparent);
+  }
+
+  .skin-arm-toggle button {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-soft);
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    border-radius: 999px;
+    padding: 5px 10px;
+    cursor: pointer;
+    transition:
+      border-color 0.14s ease,
+      background-color 0.14s ease,
+      color 0.14s ease;
+  }
+
+  .skin-arm-toggle button:hover {
+    border-color: color-mix(in srgb, var(--accent) 46%, transparent);
+  }
+
+  .skin-arm-toggle button.active {
+    border-color: color-mix(in srgb, var(--accent) 56%, transparent);
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+    color: var(--text-main);
   }
 
   .skin-preview-shell {

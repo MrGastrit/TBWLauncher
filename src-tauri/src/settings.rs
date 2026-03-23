@@ -73,7 +73,7 @@ pub fn get_total_ram_mb() -> Result<i32, String> {
 
     let total_raw = system.total_memory();
 
-    // sysinfo in different versions may return bytes or KiB.
+    //
     let total_mb = if total_raw > 1024_u64 * 1024 * 1024 {
         total_raw / (1024 * 1024)
     } else {
