@@ -238,12 +238,12 @@
       installed: false,
       filters: ["shooter"],
       loader: "Forge",
-      gameVersion: "1.20.1",
+      gameVersion: "1.12.2",
     },
     INFECTED: {
       installed: false,
       filters: ["horror"],
-      loader: "Fabric",
+      loader: "Forge",
       gameVersion: "1.12.2",
     },
     "MAFIA: Last Visitor": {
@@ -2632,7 +2632,11 @@
     width: min(560px, 94vw);
     position: relative;
     border-color: color-mix(in srgb, var(--line-strong) 82%, var(--accent) 18%);
-    background: color-mix(in srgb, var(--surface-main) 86%, var(--background-main) 14%);
+    background: color-mix(
+      in srgb,
+      var(--surface-main) 86%,
+      var(--background-main) 14%
+    );
     padding: 18px;
     gap: 12px;
   }
@@ -2678,7 +2682,11 @@
   .promo-navigation-url-box {
     border: 1px solid var(--line);
     border-radius: 10px;
-    background: color-mix(in srgb, var(--surface-alt) 82%, var(--background-main) 18%);
+    background: color-mix(
+      in srgb,
+      var(--surface-alt) 82%,
+      var(--background-main) 18%
+    );
     color: var(--text-main);
     padding: 12px 14px;
     font-family: "Consolas", "Menlo", "Monaco", monospace;
@@ -2732,7 +2740,11 @@
   }
 
   .promo-navigation-back {
-    background: color-mix(in srgb, var(--surface-alt) 74%, var(--background-main) 26%);
+    background: color-mix(
+      in srgb,
+      var(--surface-alt) 74%,
+      var(--background-main) 26%
+    );
     color: var(--text-main);
     border: 1px solid var(--line-strong);
   }
@@ -2744,7 +2756,8 @@
       color-mix(in srgb, var(--accent-soft) 70%, #4f67f2 30%)
     );
     color: #f6f8ff;
-    border: 1px solid color-mix(in srgb, var(--accent) 72%, var(--line-strong) 28%);
+    border: 1px solid
+      color-mix(in srgb, var(--accent) 72%, var(--line-strong) 28%);
   }
 
   .promo-navigation-back:hover,

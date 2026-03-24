@@ -1,15 +1,15 @@
 {
-    "version":  "1.1.1",
+    "version":  "1.2.2",
     "notes":  "TBW Launcher update",
-    "pub_date":  "2026-03-22T14:30:18.2938825Z",
+    "pub_date":  "2026-03-24T19:40:39.7655706Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTZUpxcVVTN3lvMjZrRmczRjZUNHRVWWJZem4wN1IxYm1acjh1NnZESVFsU0o1Wnl2MTJuSU9YU1N3K3hrcHludTYxeFZBRnVlLzg2QzdhVXQ0VUF6b0hFN3h1SS9LdXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0MTg5ODE3CWZpbGU6dGJ3bGF1bmNoZXJfMS4xLjFfeDY0LXNldHVwLmV4ZQpmUDZncWxhMkdDMUxxZSs1dDd3UjNVZFBWWlhqSjJtNmVES0xuRE1FN2c0bVorYkF2VzNkZThYWFBGSWU0Yk9JMnNQd3A2aWVYWTRxK3VNUnpYZUFEUT09Cg==",
-                                             "url":  "http://144.31.73.2/updates/tbwlauncher_1.1.1_x64-setup.exe"
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTZUpxcVVTN3lvMjE1Zk9vK01YUlRCVnFvUkhIMzJZb1dmak5FdS9ybjMrYWc3T2lQcmY1bS8yQ1diRHgwSzNyYVhqQ2FHWW83Wlo3Y3k1MEhvTVI5V0VjK0hHVitBZGdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0MzgxMjM5CWZpbGU6dGJ3bGF1bmNoZXJfMS4yLjJfeDY0LXNldHVwLmV4ZQpkL3ZaRkRaTVFyL1hyRFZ1YkNrZktpZU11a0V0ejRRVjRHWndOWkxjNnlVNlR4TEJzV3EwQ3BqQzZGbnArZmlCa0VaR1JSdWtzanh3MDJpSVVVZ1ZCUT09Cg==",
+                                             "url":  "http://144.31.73.2/updates/tbwlauncher_1.2.2_x64-setup.exe"
                                          },
                       "windows-x86_64-nsis":  {
-                                                  "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTZUpxcVVTN3lvMjZrRmczRjZUNHRVWWJZem4wN1IxYm1acjh1NnZESVFsU0o1Wnl2MTJuSU9YU1N3K3hrcHludTYxeFZBRnVlLzg2QzdhVXQ0VUF6b0hFN3h1SS9LdXdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0MTg5ODE3CWZpbGU6dGJ3bGF1bmNoZXJfMS4xLjFfeDY0LXNldHVwLmV4ZQpmUDZncWxhMkdDMUxxZSs1dDd3UjNVZFBWWlhqSjJtNmVES0xuRE1FN2c0bVorYkF2VzNkZThYWFBGSWU0Yk9JMnNQd3A2aWVYWTRxK3VNUnpYZUFEUT09Cg==",
-                                                  "url":  "http://144.31.73.2/updates/tbwlauncher_1.1.1_x64-setup.exe"
+                                                  "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTZUpxcVVTN3lvMjE1Zk9vK01YUlRCVnFvUkhIMzJZb1dmak5FdS9ybjMrYWc3T2lQcmY1bS8yQ1diRHgwSzNyYVhqQ2FHWW83Wlo3Y3k1MEhvTVI5V0VjK0hHVitBZGdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc0MzgxMjM5CWZpbGU6dGJ3bGF1bmNoZXJfMS4yLjJfeDY0LXNldHVwLmV4ZQpkL3ZaRkRaTVFyL1hyRFZ1YkNrZktpZU11a0V0ejRRVjRHWndOWkxjNnlVNlR4TEJzV3EwQ3BqQzZGbnArZmlCa0VaR1JSdWtzanh3MDJpSVVVZ1ZCUT09Cg==",
+                                                  "url":  "http://144.31.73.2/updates/tbwlauncher_1.2.2_x64-setup.exe"
                                               }
                   }
 }
