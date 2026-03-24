@@ -75,19 +75,43 @@ export function promoCardBuilder(
 
 export const HOME_PROMO_CARDS: HomePromoCard[] = promoCardBuilder(
   {
-    id: "promo-horror-night",
-    title: "SHADOWS THE BEST",
+    id: "tbw-boosty",
+    title: "Хотите поддержать сервер?",
     description:
-      "Вышел новый режим",
-    imageFile: "SHADOWS.png",
-    linkUrl: "https://example.com/tbw/horror-night",
+      "Это вы можете сделать на нашем Boosty, купив подписку Bronze/Gold/Platinum",
+    imageFile: "Boosty_logo.png",
+    linkUrl: "https://boosty.to/tbwcorp",
   },
-  {
+  /*{
     id: "promo-countercraft-cup",
     title: "Counter Craft Cup",
     description:
       "Турнир по Контр Крафт. Призовой фонд 5к тенге",
     imageFile: "Counter Craft.png",
-    linkUrl: "https://boosty.to",
+    linkUrl: "https://t.me/tytweselooo",
+  },*/
+  {
+    id: "tbw-telegram",
+    title: "Смотрите свежие новости!",
+    description:
+      "В нашем TG-канале регулярно появляются новостные посты для вас - наших игроков. Подписывайтесь и следите за новостями!",
+    imageFile: "Telegram_logo.png",
+    linkUrl: "https://t.me/tytweselooo",
+  },
+  {
+    id: "tbw-youtube",
+    title: "Интересный контент на нашем канале!",
+    description:
+      "Вы бы хотели видеть регулярные и интересные видео? Скорей заходите на наш Youtube-канал, где почти каждую неделю выходят новые и увлекательные видео.",
+    imageFile: "Youtube_logo.png",
+    linkUrl: "https://www.youtube.com/@TBWhorizon",
+  },
+  {
+    id: "swag-telegram",
+    title: "Когда-то хотели заказать СВАГУ?",
+    description:
+      "Вам нужен СВЭГ скин, мод, может быть вам требуется такой же лаунчер? Всё это и намного больше Вы сможете найти в Swag Studio. Всю подробную информацию можете увидеть в нашем TG-канале.",
+    imageFile: "Swag_logo.png",
+    linkUrl: "https://t.me/swagstudiohq",
   },
 );

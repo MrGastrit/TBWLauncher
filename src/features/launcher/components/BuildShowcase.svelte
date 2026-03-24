@@ -50,7 +50,7 @@
   let brokenImageByBuildId: Record<string, boolean> = {};
 
   $: availableFilters = [
-    { id: "all", label: "Все фильтры" },
+    { id: "all", label: "Без фильтров" },
     ...filterDefinitions,
   ];
 

@@ -2501,6 +2501,12 @@
     gap: 12px;
   }
 
+  @media (min-width: 1320px) {
+    .promo-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
   .promo-card {
     border: 1px solid var(--line);
     border-radius: 12px;
