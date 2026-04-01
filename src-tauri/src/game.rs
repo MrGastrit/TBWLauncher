@@ -617,13 +617,15 @@ fn ensure_mode_build_current(
     cancel_state: SharedInstallCancel,
 ) -> Result<(), String> {
     let tbw_root = find_tbw_root()?;
-    ensure_tbw_runtime_bundle(
-        &tbw_root,
-        false,
-        Some(&progress_state),
-        Some(&cancel_state),
-        mode_name,
-    )?;
+    if runtime_bootstrap_is_missing(&tbw_root) {
+        ensure_tbw_runtime_bundle(
+            &tbw_root,
+            false,
+            Some(&progress_state),
+            Some(&cancel_state),
+            mode_name,
+        )?;
+    }
 
     if let Some(source) = try_find_build_source(&tbw_root, mode_name)? {
         if build_source_has_remote_download(&source) {
@@ -638,6 +640,21 @@ fn ensure_mode_build_current(
     }
 
     Ok(())
+}
+
+fn runtime_bootstrap_is_missing(tbw_root: &Path) -> bool {
+    if !tbw_root.join("build_sources.json").is_file() {
+        return true;
+    }
+
+    let versions_dir = tbw_root.join("versions");
+    if !versions_dir.is_dir() {
+        return true;
+    }
+
+    TBW_REQUIRED_VERSION_DIRS
+        .iter()
+        .any(|folder_name| !versions_dir.join(folder_name).is_dir())
 }
 
 fn install_or_update_build(
@@ -1873,7 +1890,8 @@ fn spawn_game_process(
             skin_exchange_dir.as_path(),
             skin_cdn_base_url.as_deref(),
         );
-        command.current_dir(&plan.working_dir);
+        // Keep per-mode runtime isolation (mods/content packs/config) to avoid cross-mode bleed.
+        command.current_dir(&plan.game_dir);
         command.arg("-NoLogo");
         command.arg("-NoExit");
         command.arg("-Command");
@@ -1900,7 +1918,8 @@ fn spawn_game_process(
         skin_exchange_dir.as_path(),
         skin_cdn_base_url.as_deref(),
     );
-    command.current_dir(&plan.working_dir);
+    // Keep per-mode runtime isolation (mods/content packs/config) to avoid cross-mode bleed.
+    command.current_dir(&plan.game_dir);
 
     let launch_log_path = plan.working_dir.join("logs").join("tbw-java-launch.log");
     if !settings.show_logs {
@@ -3953,6 +3972,8 @@ fn ensure_directory_ready(path: &Path) -> Result<(), String> {
 fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .user_agent("TBWLauncher/0.1")
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(600))
         .build()
         .map_err(|error| format!("Failed to create the HTTP client: {error}"))
 }
