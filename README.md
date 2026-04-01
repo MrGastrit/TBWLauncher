@@ -9,9 +9,9 @@ TBW Launcher — это полностью кастомный лаунчер, с
 
 ## ⚙️ Особенности
 
-- 🔐 Собственная система авторизации
-- 📦 Загрузка и обновление клиента
-- 🚫 Отсутствие привязки к лицензионным сервисам (скины, аккаунты и т.д.)
+- Собственная система авторизации
+- Загрузка и обновление клиента
+- Отсутствие привязки к лицензионным сервисам (скины, аккаунты и т.д.)
 
 ## 🚀 Установка и запуск
 
@@ -27,7 +27,7 @@ TBW Launcher — это полностью кастомный лаунчер, с
 
 ## 👨‍💻 Разработчик
 
-Лаунчер разработан студией **Swag Studio 💪**.  
+Лаунчер разработан студией **Swag Studio**.  
 Подробнее о проектах и услугах: *https://t.me/swagstudiohq*
 
 ## 📬 Поддержка
@@ -59,9 +59,9 @@ It is built from scratch and is not connected to the official Minecraft infrastr
 
 ## ⚙️ Features
 
-- 🔐 Custom authentication system
-- 📦 Client download and updates
-- 🚫 No dependency on licensed services (skins, accounts, etc.)
+- Custom authentication system
+- Client download and updates
+- No dependency on licensed services (skins, accounts, etc.)
 
 ## 🚀 Installation & Launch
 
@@ -77,7 +77,7 @@ This launcher is intended **only for use with the TBW server**.
 
 ## 👨‍💻 Developer
 
-Developed by **Swag Studio 💪**  
+Developed by **Swag Studio**  
 More info about projects and services: *https://t.me/swagstudiohq*
 
 ## 📬 Support
